@@ -35,8 +35,12 @@ const JWT_SECRET = process.env.JWT_SECRET || 'flunexa_super_secret_jwt_key_2026'
 app.use(cors());
 app.use(express.json());
 
-// Initialize DB on boot
-await initDb();
+// Initialize DB on boot safely
+try {
+  await initDb();
+} catch (err) {
+  console.warn('⚠️ [DB] Non-fatal initDb notice:', err.message);
+}
 
 // Helper to generate 6-digit numeric OTP
 function generateOtp() {
