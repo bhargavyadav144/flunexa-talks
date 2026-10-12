@@ -8,7 +8,7 @@ import { LanguageSelectorModal } from '../common/LanguageSelectorModal';
 import { speechService } from '../../services/speechService';
 import { AIService } from '../../services/aiService';
 import { soundService } from '../../services/soundService';
-import { TTSService } from '../../services/ttsService';
+import { TTSService, SpeechSegment } from '../../services/ttsService';
 import { TranslationService } from '../../services/translationService';
 import { EchoCancellationService } from '../../services/echoCancellationService';
 
@@ -234,9 +234,12 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       TTSService.stop();
       speechService.stopSpeaking();
       setMouthVolume(0);
-      setAvatarState('interrupted');
-      setCurrentEmotion('surprised');
+      setAvatarState('listening');
+      setCurrentEmotion('listening');
       soundService.playTick();
+      if (isSessionActiveRef.current) {
+        speechService.resumeListeningAfterPlayback();
+      }
     }
   };
 
@@ -312,35 +315,68 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     const hasHindi = /[\u0900-\u097F]/.test(text);
     const activeLang: NativeLanguage = hasTelugu ? 'Telugu' : hasHindi ? 'Hindi' : (overrideLang || user.nativeLanguage);
 
-    TTSService.speak(
-      text,
-      activeLang,
-      gender,
-      () => {
-        if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) {
-          TTSService.stop();
-          return;
-        }
-        setAvatarState(nextState);
-        setCurrentEmotion(resolvedEmotion);
-      },
-      () => {
-        if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) return;
-        setAvatarState(nextState === 'sleepy' ? 'sleepy' : 'listening');
-        setCurrentEmotion('listening');
-        setMouthVolume(0);
-        // CRITICAL: Ensure continuous microphone listening immediately after AI speech ends!
-        if (isSessionActiveRef.current) {
-          ensureListeningActive();
-        }
-      },
-      undefined,
-      (vol) => {
-        if (expectedGenId === undefined || expectedGenId === generationIdRef.current) {
-          setMouthVolume(vol);
-        }
+    const onPlaybackStart = () => {
+      if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) {
+        TTSService.stop();
+        return;
       }
-    );
+      setAvatarState(nextState);
+      setCurrentEmotion(resolvedEmotion);
+    };
+
+    const onPlaybackEnd = () => {
+      if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) return;
+      setAvatarState(nextState === 'sleepy' ? 'sleepy' : 'listening');
+      setCurrentEmotion('listening');
+      setMouthVolume(0);
+      // CRITICAL: Resume microphone listening strictly after AI output finishes completely!
+      if (isSessionActiveRef.current) {
+        speechService.resumeListeningAfterPlayback();
+      }
+    };
+
+    const onVolumeUpdate = (vol: number) => {
+      if (expectedGenId === undefined || expectedGenId === generationIdRef.current) {
+        setMouthVolume(vol);
+      }
+    };
+
+    // Check if the response contains structured mother-tongue explanation + English correction
+    const explanationMatch = text.match(/Explanation in\s+[a-zA-Z\s()]+:\s*([^\n]+)/i);
+    const correctMatch = text.match(/Correct sentence:\s*([^\n]+)/i);
+    const practiceMatch = text.match(/Practice:\s*([^\n]+)/i);
+
+    if (explanationMatch && correctMatch) {
+      // Multi-voice sequenced speech:
+      // Segment 1: Spoken explanation in the user's mother tongue voice (e.g. Telugu / Hindi)
+      // Segment 2: Corrected sentence and practice in the English voice!
+      const nativeExplanationText = explanationMatch[1].trim();
+      const englishCorrectedText = `The correct sentence is: ${correctMatch[1].trim()}. ${practiceMatch ? practiceMatch[1].trim() : 'Now, try saying the corrected sentence in English.'}`;
+
+      const segments: SpeechSegment[] = [
+        { text: nativeExplanationText, lang: user.nativeLanguage },
+        { text: englishCorrectedText, lang: 'English' },
+      ];
+
+      TTSService.speakSequenced(
+        segments,
+        gender,
+        onPlaybackStart,
+        onPlaybackEnd,
+        undefined,
+        onVolumeUpdate
+      );
+    } else {
+      TTSService.speak(
+        text,
+        activeLang,
+        gender,
+        onPlaybackStart,
+        onPlaybackEnd,
+        undefined,
+        onVolumeUpdate
+      );
+    }
   };
 
   // Process user speech when user pauses or submits
@@ -425,6 +461,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     setAvatarState('thinking');
     setCurrentEmotion('thinking');
     setErrorMessage(null);
+    speechService.pauseListeningForPlayback(); // Stop mic while AI is processing and speaking
 
     const controller = new AbortController();
     activeAbortControllerRef.current = controller;
@@ -958,7 +995,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
 
 
         {/* Audio Waveform under Robot */}
-        <div style={{ width: '100%', maxWidth: 360, margin: '8px 0 16px' }}>
+        <div style={{ width: '100%', maxWidth: 360, margin: '8px 0 10px' }}>
           <AudioWaveform
             isActive={avatarState === 'speaking' || avatarState === 'listening'}
             volume={avatarState === 'speaking' ? mouthVolume : micWaveVolume}
@@ -966,12 +1003,37 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
           />
         </div>
 
+        {/* Quick Barge-in Button when Nexa is speaking */}
+        {(avatarState === 'speaking' || avatarState === 'correcting' || avatarState === 'celebrating') && (
+          <button
+            onClick={() => handleBargeIn('tap_interrupt')}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 14px',
+              borderRadius: 999,
+              backgroundColor: 'rgba(239, 68, 68, 0.2)',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              color: '#fca5a5',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              marginBottom: 10,
+              transition: 'all 0.2s ease',
+            }}
+            title="Interrupt Nexa and start speaking"
+          >
+            <span>⏹️ Tap to Interrupt Nexa</span>
+          </button>
+        )}
+
         {/* Live Formatted Speech Recording Display Box (Visible while user is talking) */}
         {liveTranscript && (
           <div
             style={{
               width: '100%',
-              maxWidth: 420,
+              maxWidth: 480,
               padding: '12px 18px',
               borderRadius: 'var(--radius-lg)',
               backgroundColor: 'rgba(16, 185, 129, 0.15)',
@@ -995,6 +1057,71 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
             <div style={{ flex: 1, fontSize: 13, color: '#ecfdf5', fontStyle: 'italic', wordBreak: 'break-word' }}>
               <strong style={{ color: '#34d399', fontStyle: 'normal' }}>Listening:</strong> "{liveTranscript}"
             </div>
+          </div>
+        )}
+
+        {/* Prominent Live English Teacher Card or Latest Nexa Speech Bubble */}
+        {!liveTranscript && latestCorrection && (
+          <div
+            style={{
+              width: '100%',
+              maxWidth: 480,
+              padding: '14px 18px',
+              borderRadius: 16,
+              backgroundColor: 'rgba(15, 23, 42, 0.9)',
+              backdropFilter: 'blur(16px)',
+              border: '1px solid rgba(245, 158, 11, 0.45)',
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.45)',
+              textAlign: 'left',
+              marginTop: 6,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#f59e0b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>💡</span> English Teacher Correction
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Explanation in {user.nativeLanguage}
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+              <div style={{ color: '#fca5a5', backgroundColor: 'rgba(239, 68, 68, 0.12)', padding: '6px 10px', borderRadius: 8 }}>
+                <strong style={{ color: '#ef4444' }}>Your sentence: </strong> {latestCorrection.original}
+              </div>
+              <div style={{ color: '#6ee7b7', backgroundColor: 'rgba(16, 185, 129, 0.12)', padding: '6px 10px', borderRadius: 8 }}>
+                <strong style={{ color: '#10b981' }}>Correct sentence: </strong> {latestCorrection.corrected}
+              </div>
+              <div style={{ color: '#e2e8f0', backgroundColor: 'rgba(255, 255, 255, 0.05)', padding: '8px 10px', borderRadius: 8, lineHeight: 1.5 }}>
+                <strong style={{ color: '#38bdf8' }}>Explanation in {user.nativeLanguage}: </strong>
+                {latestCorrection.nativeExplanation || latestCorrection.englishExplanation}
+              </div>
+              <div style={{ color: '#fef08a', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                <span>🎙️</span> Practice: "Now, try saying the corrected sentence in English."
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!liveTranscript && !latestCorrection && messages.length > 0 && messages[messages.length - 1].sender === 'ai' && (
+          <div
+            style={{
+              width: '100%',
+              maxWidth: 480,
+              padding: '12px 18px',
+              borderRadius: 16,
+              backgroundColor: 'rgba(15, 23, 42, 0.8)',
+              backdropFilter: 'blur(16px)',
+              border: '1px solid var(--border-glass)',
+              textAlign: 'center',
+              fontSize: 13,
+              color: '#f8fafc',
+              lineHeight: 1.5,
+              marginTop: 6,
+            }}
+          >
+            <span style={{ fontStyle: 'italic', color: '#38bdf8' }}>"</span>
+            {messages[messages.length - 1].text}
+            <span style={{ fontStyle: 'italic', color: '#38bdf8' }}>"</span>
           </div>
         )}
       </div>

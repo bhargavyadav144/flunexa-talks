@@ -8,6 +8,12 @@ export interface TTSOptions {
   pitch?: number;
 }
 
+export interface SpeechSegment {
+  text: string;
+  lang: NativeLanguage;
+  langCode?: string;
+}
+
 // Google Cloud Language Voice mapping for realistic human speech (Male & Female)
 const LANGUAGE_VOICE_MAP: Record<string, { female: { code: string; name: string; ssmlGender: string }; male: { code: string; name: string; ssmlGender: string } }> = {
   Telugu: {
@@ -310,7 +316,65 @@ export class TTSService {
     }, 40);
   }
 
+  private static sequenceCancelFn: (() => void) | null = null;
+
+  // Speak multi-part speech sequences (e.g. native mother-tongue explanation followed by English correction)
+  static async speakSequenced(
+    segments: SpeechSegment[],
+    gender: 'MALE' | 'FEMALE' = 'FEMALE',
+    onStart?: () => void,
+    onEnd?: () => void,
+    onAudioBoundary?: (charIndex: number) => void,
+    onVolumeChange?: (volume: number) => void
+  ): Promise<void> {
+    this.stop();
+
+    const validSegments = (segments || []).filter((s) => s && s.text && s.text.trim());
+    if (validSegments.length === 0) {
+      if (onEnd) onEnd();
+      return;
+    }
+
+    let currentIndex = 0;
+    let isCancelled = false;
+
+    this.sequenceCancelFn = () => {
+      isCancelled = true;
+    };
+
+    const playNext = async () => {
+      if (isCancelled || currentIndex >= validSegments.length) {
+        if (!isCancelled && onEnd) onEnd();
+        return;
+      }
+
+      const segment = validSegments[currentIndex];
+      const isFirst = currentIndex === 0;
+      currentIndex++;
+
+      await this.speak(
+        segment.text,
+        segment.lang,
+        gender,
+        isFirst ? onStart : undefined,
+        () => {
+          if (!isCancelled) {
+            playNext();
+          }
+        },
+        onAudioBoundary,
+        onVolumeChange
+      );
+    };
+
+    playNext();
+  }
+
   static stop() {
+    if (this.sequenceCancelFn) {
+      this.sequenceCancelFn();
+      this.sequenceCancelFn = null;
+    }
     this.stopVolumeCadence();
     this.isSpeakingAudio = false;
     this.lastSpokenTimestamp = Date.now();

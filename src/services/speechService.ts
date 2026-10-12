@@ -211,6 +211,7 @@ export class SpeechService {
   private activeHandlers: SpeechRecognitionHandlers | null = null;
   private currentLangCode: string = 'en-IN';
   private shouldKeepListening: boolean = false;
+  private isAIPerformingSpeech: boolean = false;
   private restartTimeout: any = null;
 
   // Start speech recognition with automatic Voice Activity Detection & interruption
@@ -259,6 +260,11 @@ export class SpeechService {
       };
 
       this.recognition.onresult = (event: any) => {
+        // Discard any incoming audio if AI is actively speaking (Echo Prevention)
+        if (this.isAIPerformingSpeech) {
+          return;
+        }
+
         // Automatically stop active AI TTS if user interrupts and speaks
         if (handlers.onUserSpeakingDetected) {
           handlers.onUserSpeakingDetected();
@@ -281,6 +287,7 @@ export class SpeechService {
         // Fast silence detection: when user finishes speaking (650ms pause), finalize turn
         if (this.silenceTimer) clearTimeout(this.silenceTimer);
         this.silenceTimer = setTimeout(() => {
+          if (this.isAIPerformingSpeech) return;
           const finalizedText = (accumulatedFinal + ' ' + interim).trim();
           if (finalizedText && handlers.onFinalResult) {
             accumulatedFinal = '';
@@ -295,11 +302,11 @@ export class SpeechService {
         if (event.error !== 'no-speech' && handlers.onError) {
           handlers.onError(event.error);
         }
-        // Auto-recover continuous listening loop on transient notices
-        if (this.shouldKeepListening) {
+        // Auto-recover continuous listening loop on transient notices only if AI is NOT speaking
+        if (this.shouldKeepListening && !this.isAIPerformingSpeech) {
           if (this.restartTimeout) clearTimeout(this.restartTimeout);
           this.restartTimeout = setTimeout(() => {
-            if (this.shouldKeepListening && !this.isListening && this.activeHandlers) {
+            if (this.shouldKeepListening && !this.isListening && !this.isAIPerformingSpeech && this.activeHandlers) {
               this.startListening(this.activeHandlers, this.currentLangCode);
             }
           }, 200);
@@ -309,11 +316,11 @@ export class SpeechService {
       this.recognition.onend = () => {
         this.isListening = false;
         if (handlers.onEnd) handlers.onEnd();
-        // Seamless background restart if session remains active
-        if (this.shouldKeepListening) {
+        // Seamless background restart if session remains active and AI is not speaking
+        if (this.shouldKeepListening && !this.isAIPerformingSpeech) {
           if (this.restartTimeout) clearTimeout(this.restartTimeout);
           this.restartTimeout = setTimeout(() => {
-            if (this.shouldKeepListening && !this.isListening && this.activeHandlers) {
+            if (this.shouldKeepListening && !this.isListening && !this.isAIPerformingSpeech && this.activeHandlers) {
               this.startListening(this.activeHandlers, this.currentLangCode);
             }
           }, 150);
@@ -328,21 +335,20 @@ export class SpeechService {
     }
   }
 
-  // Update recognition language dynamically
+  // Update recognition language dynamically with mandatory clean restart
   public setLanguage(langCode: string) {
     if (!langCode) return;
     const isDifferent = this.currentLangCode !== langCode;
     this.currentLangCode = langCode;
 
     if (isDifferent && this.recognition && this.isListening) {
-      console.log(`[MIC] Switching recognition language to: ${langCode}`);
+      console.log(`[MIC] Explicitly restarting recognition for language: ${langCode}`);
       try {
-        this.recognition.lang = langCode;
-      } catch (e) {
-        // If browser requires restart to change language
-        if (this.activeHandlers) {
-          this.startListening(this.activeHandlers, langCode);
-        }
+        this.recognition.abort();
+      } catch (e) {}
+      this.isListening = false;
+      if (this.activeHandlers && !this.isAIPerformingSpeech) {
+        this.startListening(this.activeHandlers, langCode);
       }
     }
   }
@@ -351,17 +357,35 @@ export class SpeechService {
     return this.currentLangCode;
   }
 
-  // Ensure recognition is actively capturing speech without interruption
+  // Pause recognition capture while Nexa is speaking so Nexa never hears its own voice
+  public pauseListeningForPlayback() {
+    this.isAIPerformingSpeech = true;
+    if (this.silenceTimer) clearTimeout(this.silenceTimer);
+    if (this.restartTimeout) clearTimeout(this.restartTimeout);
+    if (this.recognition && this.isListening) {
+      try {
+        this.recognition.abort();
+      } catch (e) {}
+    }
+    this.isListening = false;
+    console.log('[MIC] Paused recognition during AI playback.');
+  }
+
+  // Resume microphone capture after Nexa finishes speaking
+  public resumeListeningAfterPlayback() {
+    this.isAIPerformingSpeech = false;
+    if (this.shouldKeepListening && this.activeHandlers) {
+      console.log('[MIC] Resuming recognition in ' + this.currentLangCode + ' after speech end.');
+      this.startListening(this.activeHandlers, this.currentLangCode);
+    }
+  }
+
   public ensureListening(handlers?: SpeechRecognitionHandlers, langCode?: string) {
     this.shouldKeepListening = true;
+    this.isAIPerformingSpeech = false;
     if (handlers) this.activeHandlers = handlers;
     if (langCode && langCode !== this.currentLangCode) {
       this.currentLangCode = langCode;
-      if (this.recognition) {
-        try {
-          this.recognition.lang = langCode;
-        } catch (e) {}
-      }
     }
 
     if (!this.isListening && this.activeHandlers) {

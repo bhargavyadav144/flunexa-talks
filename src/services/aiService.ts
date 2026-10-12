@@ -679,15 +679,32 @@ export class AIService {
       };
     }
 
-    // 1. Strict English Grammar Correction Rule: Explain English mistakes in ENGLISH ONLY
+    // 1. Core Teaching Rule: English correction with mother-tongue explanations
     if (mistakes.length > 0) {
       const topMistake = mistakes[0];
-      const englishCorrection = `Your sentence should be: "${topMistake.corrected}"\n${topMistake.englishExplanation}\nNow try another sentence using the correct form!`;
+      const nativeExplanation = topMistake.nativeExplanation || topMistake.englishExplanation;
+      const formattedCorrection = `Your sentence: ${topMistake.original}\nCorrect sentence: ${topMistake.corrected}\nExplanation in ${nativeLang}: ${nativeExplanation}\nPractice: "Now, try saying the corrected sentence in English."`;
 
       return {
-        text: englishCorrection,
+        text: formattedCorrection,
         mistakes,
         funnyReaction: 'concerned',
+        emotion: 'correcting',
+      };
+    }
+
+    // Single-word / incomplete utterance guard (e.g. "Next", "Ok", "Yes")
+    if (/^(next|ok|okay|yes|yeah|no|fine|cool|sure)$/i.test(textLower)) {
+      const promptNext = nativeLang === 'Telugu'
+        ? "ఖచ్చితంగా! తరువాతి విషయం గురించి మాట్లాడుకుందాం. మీ హాబీలు లేదా మీ రోజు గురించి కొంచెం ఇంగ్లీషులో చెప్పండి చూద్దాం!"
+        : nativeLang === 'Hindi'
+        ? "ज़रूर! चलिए अगले विषय पर बात करते हैं। अपने शौक या दिनचर्या के बारे में इंग्लिश में बताइए!"
+        : "Sure! What would you like to practice next? Tell me about your favorite hobby or what you did today!";
+      return {
+        text: promptNext,
+        mistakes: [],
+        funnyReaction: 'wave',
+        emotion: 'curious',
       };
     }
 
