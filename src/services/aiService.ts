@@ -1,7 +1,7 @@
-import { AvatarId, Mistake, NativeLanguage, PronunciationWord, SessionAnalysis, VocabularySuggestion } from '../types';
+import { AvatarId, Mistake, NativeLanguage, NexaEmotion, PronunciationWord, SessionAnalysis, VocabularySuggestion } from '../types';
 
 // Multilingual grammatical rule explanations
-const NATIVE_EXPLANATIONS: Record<string, Record<NativeLanguage, string>> = {
+const NATIVE_EXPLANATIONS: Record<string, Partial<Record<NativeLanguage, string>>> = {
   'past_tense_go': {
     Telugu: "‘Yesterday’ అనేది గడిచిపోయిన సమయం (past time) కాబట్టి ‘go’ బదులు past form ‘went’ ఉపయోగించాలి.",
     Hindi: "‘Yesterday’ बीते हुए समय की बात कर रहा है, इसलिए ‘go’ की जगह past form ‘went’ का प्रयोग करें।",
@@ -112,7 +112,7 @@ export class AIService {
           category: 'Tense',
           severity: 'critical',
           englishExplanation: "Past time markers like 'yesterday' or 'last week' demand the simple past tense ('went').",
-          nativeExplanation: NATIVE_EXPLANATIONS['past_tense_go'][nativeLang] || NATIVE_EXPLANATIONS['past_tense_go']['English'],
+          nativeExplanation: NATIVE_EXPLANATIONS['past_tense_go'][nativeLang] || NATIVE_EXPLANATIONS['past_tense_go']['English'] || '',
         });
       }
 
@@ -151,7 +151,7 @@ export class AIService {
           category: 'Grammar',
           severity: 'critical',
           englishExplanation: "Third person singular subjects (He/She/It) take 'doesn't' instead of 'don't'.",
-          nativeExplanation: NATIVE_EXPLANATIONS['subject_verb_agreement_dont'][nativeLang] || NATIVE_EXPLANATIONS['subject_verb_agreement_dont']['English'],
+          nativeExplanation: NATIVE_EXPLANATIONS['subject_verb_agreement_dont'][nativeLang] || NATIVE_EXPLANATIONS['subject_verb_agreement_dont']['English'] || '',
         });
       }
 
@@ -165,7 +165,7 @@ export class AIService {
           category: 'Natural English',
           severity: 'important',
           englishExplanation: "'Agree' is already a verb in English; say 'I agree' rather than 'I am agree'.",
-          nativeExplanation: NATIVE_EXPLANATIONS['i_am_agree'][nativeLang] || NATIVE_EXPLANATIONS['i_am_agree']['English'],
+          nativeExplanation: NATIVE_EXPLANATIONS['i_am_agree'][nativeLang] || NATIVE_EXPLANATIONS['i_am_agree']['English'] || '',
         });
       }
 
@@ -274,7 +274,7 @@ export class AIService {
           category: 'Grammar',
           severity: 'important',
           englishExplanation: "Present continuous actions require the '-ing' verb form with 'am'.",
-          nativeExplanation: NATIVE_EXPLANATIONS['continuous_tense_action'][nativeLang] || NATIVE_EXPLANATIONS['continuous_tense_action']['English'],
+          nativeExplanation: NATIVE_EXPLANATIONS['continuous_tense_action'][nativeLang] || NATIVE_EXPLANATIONS['continuous_tense_action']['English'] || '',
         });
       }
 
@@ -477,7 +477,7 @@ export class AIService {
     const xpEarned = Math.round(25 + Math.min(60, durationSeconds * 0.2) + (overallScore > 80 ? 25 : 10));
 
     // Dynamic coach summary based on native language & actual score
-    const nativeSummaries: Record<NativeLanguage, string> = {
+    const nativeSummaries: Partial<Record<NativeLanguage, string>> = {
       Telugu: mistakes.length === 0 ? 'అద్భుతం! మాట్లాడిన మాట్లాటల్లో ఒక్క గ్రామర్ తప్పు కూడా లేదు.' : 'Fluency Score: ' + fluencyScore + '%. ' + mistakes.length + ' తప్పులను సరిచేయండి.',
       Hindi: mistakes.length === 0 ? 'शानदार! बिना किसी गलती के बोला।' : 'Fluency Score: ' + fluencyScore + '%. ' + mistakes.length + ' गलतियाँ।',
       Tamil: mistakes.length === 0 ? 'மிக அருமை! பிழைகள் இல்லை.' : 'Fluency Score: ' + fluencyScore + '%.',
@@ -569,7 +569,7 @@ export class AIService {
     history: { sender: 'ai' | 'user'; text: string }[],
     avatarName: string = 'Nexa',
     nativeLang: NativeLanguage = 'Telugu'
-  ): { text: string; mistakes: Mistake[]; funnyReaction: string; detectedLanguage?: NativeLanguage; detectedAvatar?: AvatarId } {
+  ): { text: string; mistakes: Mistake[]; funnyReaction: string; emotion?: NexaEmotion; detectedLanguage?: NativeLanguage; detectedAvatar?: AvatarId } {
     const textLower = userMessage.toLowerCase().trim();
     const mistakes = this.analyzeGrammarAndMistakes(userMessage, nativeLang);
 
@@ -888,7 +888,7 @@ export class AIService {
     signal?: AbortSignal,
     askedQuestions?: string[],
     discussedTopics?: string[]
-  ): Promise<{ text: string; mistakes: Mistake[]; funnyReaction: string; detectedLanguage?: NativeLanguage; detectedAvatar?: AvatarId }> {
+  ): Promise<{ text: string; mistakes: Mistake[]; funnyReaction: string; emotion?: NexaEmotion; detectedLanguage?: NativeLanguage; detectedAvatar?: AvatarId }> {
     // 1. Detect if user is requesting avatar or language switch
     let detectedLanguage: NativeLanguage | undefined;
     let detectedAvatar: AvatarId | undefined;
@@ -930,10 +930,16 @@ export class AIService {
             /[\u0900-\u097F]/.test(data.text) ? 'Hindi' :
             undefined
           );
+          const resolvedEmotion: NexaEmotion = (data.emotion as NexaEmotion) || (
+            mistakes.length > 0 ? 'correcting' :
+            data.funnyReaction === 'celebrate' ? 'celebrating' :
+            'neutral'
+          );
           return {
             text: data.text,
             mistakes,
             funnyReaction: mistakes.length > 0 ? 'correct' : 'celebrate',
+            emotion: resolvedEmotion,
             detectedLanguage: serverDetectedLang || detectedLanguage,
             detectedAvatar,
           };
@@ -950,6 +956,7 @@ export class AIService {
     const localResult = this.generateTeacherResponse(userMessage, topic, history, avatarName, nativeLang);
     return {
       ...localResult,
+      emotion: localResult.emotion || (mistakes.length > 0 ? 'correcting' : 'neutral'),
       detectedLanguage: detectedLanguage || localResult.detectedLanguage,
       detectedAvatar: detectedAvatar || localResult.detectedAvatar,
     };

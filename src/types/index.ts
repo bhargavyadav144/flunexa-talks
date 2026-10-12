@@ -9,7 +9,37 @@ export type NativeLanguage =
   | 'Bengali'
   | 'Marathi'
   | 'Gujarati'
+  | 'Punjabi'
+  | 'Odia'
+  | 'Urdu'
+  | 'Assamese'
+  | 'Sanskrit'
+  | 'Nepali'
+  | 'Kashmiri'
+  | 'Konkani'
+  | 'Sindhi'
+  | 'Manipuri'
+  | 'Bodo'
+  | 'Dogri'
+  | 'Maithili'
+  | 'Santali'
   | 'English';
+
+export type NexaEmotion =
+  | 'neutral'
+  | 'happy'
+  | 'excited'
+  | 'thinking'
+  | 'listening'
+  | 'explaining'
+  | 'correcting'
+  | 'encouraging'
+  | 'celebrating'
+  | 'empathetic'
+  | 'curious'
+  | 'playful'
+  | 'surprised'
+  | 'sleepy';
 
 export type AvatarId = 'nexa' | 'alex' | 'mia' | 'aria' | 'leo';
 
@@ -21,9 +51,13 @@ export type AvatarState =
   | 'thinking'
   | 'correcting'
   | 'celebrating'
+  | 'explaining'
+  | 'encouraging'
+  | 'empathetic'
   | 'sleepy'
   | 'interrupted'
-  | 'paused';
+  | 'paused'
+  | 'wave';
 
 export interface UserProfile {
   name: string;
@@ -150,6 +184,7 @@ export interface ConversationMessage {
   audioDuration?: number;
   mistakesDetected?: Mistake[];
   funnyReaction?: string;
+  emotion?: NexaEmotion;
   detectedLanguage?: string;
 }
 

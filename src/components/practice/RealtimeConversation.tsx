@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-import { AvatarId, AvatarState, ConversationMessage, Mistake, NativeLanguage } from '../../types';
+import { AvatarId, AvatarState, ConversationMessage, Mistake, NativeLanguage, NexaEmotion } from '../../types';
 import { Avatar3D } from '../avatar/Avatar3D';
 import { VoiceStatusBadge } from '../common/VoiceStatusBadge';
 import { AudioWaveform } from '../common/AudioWaveform';
+import { LanguageSelectorModal } from '../common/LanguageSelectorModal';
 import { speechService } from '../../services/speechService';
 import { AIService } from '../../services/aiService';
 import { soundService } from '../../services/soundService';
@@ -59,6 +60,8 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
   const [latestCorrection, setLatestCorrection] = useState<Mistake | null>(null);
   const [savedNotification, setSavedNotification] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [currentEmotion, setCurrentEmotion] = useState<NexaEmotion>('neutral');
+  const [isLanguageModalOpen, setIsLanguageModalOpen] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<any>(null);
@@ -232,6 +235,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       speechService.stopSpeaking();
       setMouthVolume(0);
       setAvatarState('interrupted');
+      setCurrentEmotion('surprised');
       soundService.playTick();
     }
   };
@@ -256,22 +260,35 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // AI speaks response with funny robot personality & human voice
+  // AI speaks response with dynamic living character personality & synchronized mouth
   const speakAIResponse = (
     text: string,
     funnyReaction?: string,
     hasMistake: boolean = false,
     overrideAvatar?: AvatarId,
     overrideLang?: NativeLanguage,
-    expectedGenId?: number
+    expectedGenId?: number,
+    emotion?: NexaEmotion
   ) => {
     if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) {
       console.log('[TTS] Discarding outdated speech playback after interruption.');
       return;
     }
 
+    const resolvedEmotion: NexaEmotion =
+      emotion ||
+      (hasMistake
+        ? 'correcting'
+        : funnyReaction === 'celebrate'
+        ? 'celebrating'
+        : funnyReaction === 'sleepy'
+        ? 'sleepy'
+        : 'explaining');
+    setCurrentEmotion(resolvedEmotion);
+
     if (isAudioMuted) {
       setAvatarState('listening');
+      setCurrentEmotion('listening');
       if (isSessionActiveRef.current) {
         ensureListeningActive();
       }
@@ -305,15 +322,22 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
           return;
         }
         setAvatarState(nextState);
-        setMouthVolume(0.8);
+        setCurrentEmotion(resolvedEmotion);
       },
       () => {
         if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) return;
         setAvatarState(nextState === 'sleepy' ? 'sleepy' : 'listening');
+        setCurrentEmotion('listening');
         setMouthVolume(0);
         // CRITICAL: Ensure continuous microphone listening immediately after AI speech ends!
         if (isSessionActiveRef.current) {
           ensureListeningActive();
+        }
+      },
+      undefined,
+      (vol) => {
+        if (expectedGenId === undefined || expectedGenId === generationIdRef.current) {
+          setMouthVolume(vol);
         }
       }
     );
@@ -359,6 +383,18 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       speechService.setLanguage('hi-IN');
     }
 
+    // Check if user successfully practiced and corrected a previous mistake
+    if (latestCorrection) {
+      const targetCorrection = latestCorrection.corrected.toLowerCase();
+      const userLower = userText.toLowerCase().trim();
+      const isPastTenseFixed = latestCorrection.id.includes('past') && (userLower.includes('went') || userLower.includes('saw') || userLower.includes('came'));
+      if (userLower.includes(targetCorrection) || isPastTenseFixed) {
+        console.log('[TUTOR] Student successfully practiced corrected sentence!');
+        soundService.playSuccessBeep();
+        setLatestCorrection(null);
+      }
+    }
+
     // STRICT ENGLISH GRAMMAR CORRECTION RULE:
     // Only analyze English grammar mistakes if the utterance is in English!
     const detectedMistakes = (utteranceLang === 'English')
@@ -368,8 +404,6 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     if (detectedMistakes.length > 0) {
       setHighlightedMistakes((prev) => [...detectedMistakes, ...prev].slice(0, 5));
       setLatestCorrection(detectedMistakes[0]);
-    } else {
-      setLatestCorrection(null);
     }
 
     const newUserMsg: ConversationMessage = {
@@ -389,6 +423,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     setMessages((prev) => [...prev, newUserMsg]);
     setLiveTranscript('');
     setAvatarState('thinking');
+    setCurrentEmotion('thinking');
     setErrorMessage(null);
 
     const controller = new AbortController();
@@ -438,7 +473,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
 
       if (aiResult.mistakes.length > 0) {
         soundService.playCorrectionSoft();
-      } else if (aiResult.funnyReaction === 'celebrate' || aiResult.funnyReaction === 'starry') {
+      } else if (aiResult.funnyReaction === 'celebrate' || aiResult.funnyReaction === 'starry' || aiResult.emotion === 'celebrating') {
         soundService.playSuccessBeep();
       }
 
@@ -449,6 +484,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         mistakesDetected: aiResult.mistakes,
         funnyReaction: aiResult.funnyReaction,
+        emotion: aiResult.emotion,
       };
 
       setMessages((prev) => [...prev, newAiMsg]);
@@ -458,7 +494,8 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         aiResult.mistakes.length > 0,
         aiResult.detectedAvatar,
         aiResult.detectedLanguage,
-        currentGenId
+        currentGenId,
+        aiResult.emotion
       );
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -757,6 +794,29 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
             >
               हिन्दी
             </button>
+
+            {/* Searchable 22+ Indian Languages Selector Trigger */}
+            <button
+              onClick={() => setIsLanguageModalOpen(true)}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 700,
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                cursor: 'pointer',
+                backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                color: '#e2e8f0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                transition: 'all 0.2s ease',
+              }}
+              title="Search and select from 22+ supported Indian languages"
+            >
+              <span>🌐</span>
+              <span className="hidden sm:inline">22+ Languages</span>
+            </button>
           </div>
 
           <VoiceStatusBadge state={avatarState} />
@@ -886,7 +946,13 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
           <Avatar3D
             isSpeaking={avatarState === 'speaking' || avatarState === 'celebrating' || avatarState === 'correcting'}
             avatarState={avatarState}
+            emotion={currentEmotion}
             mouthVolume={mouthVolume}
+            onClick={() => {
+              setCurrentEmotion('playful');
+              soundService.playSuccessBeep();
+              setTimeout(() => setCurrentEmotion('neutral'), 2500);
+            }}
           />
         </div>
 
@@ -1121,6 +1187,17 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
 
         </div>
       )}
+
+      {/* Searchable 22+ Indian Scheduled Languages Modal */}
+      <LanguageSelectorModal
+        isOpen={isLanguageModalOpen}
+        onClose={() => setIsLanguageModalOpen(false)}
+        selectedLanguage={user.nativeLanguage}
+        onSelectLanguage={(lang, speechCode) => {
+          updateUser({ nativeLanguage: lang });
+          handleSwitchSpeechLang(speechCode);
+        }}
+      />
     </div>
   );
 };

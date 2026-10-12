@@ -18,9 +18,23 @@ export class TranslationService {
       Marathi: 'mr',
       Gujarati: 'gu',
       English: 'en',
+      Punjabi: 'pa',
+      Odia: 'or',
+      Urdu: 'ur',
+      Assamese: 'as',
+      Sanskrit: 'sa',
+      Nepali: 'ne',
+      Konkani: 'kok',
+      Kashmiri: 'ks',
+      Sindhi: 'sd',
+      Manipuri: 'mni',
+      Bodo: 'brx',
+      Dogri: 'doi',
+      Maithili: 'mai',
+      Santali: 'sat',
     };
 
-    const targetLangCode = langCodeMap[targetLanguage] || 'te';
+    const targetLangCode = langCodeMap[targetLanguage] || 'en';
 
     try {
       const response = await fetch('/api/translate', {

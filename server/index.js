@@ -814,7 +814,17 @@ ${topicsList}
 - You must NEVER ask any question from the list above, nor close paraphrases (e.g., NEVER repeat morning routine, breakfast, waking habits, college schedule if already asked).
 - Generate a dynamic, fresh question inspired by the user's latest response.
 - When a topic feels covered, change topics naturally (e.g., favourite films, street food, dream travel destinations, memorable childhood stories, future ambitions).
-- Do NOT force a question if the user asked a question or asked for help.`;
+ANIMATION EMOTION DIRECTIVE:
+At the very end of your response, on a new line, append an internal emotion tag:
+[EMOTION: explaining | correcting | celebrating | encouraging | empathetic | curious | playful | neutral]
+- Use 'correcting' when explaining an English grammar mistake.
+- Use 'celebrating' when the user speaks accurately, corrects a past mistake, or achieves a speaking milestone.
+- Use 'explaining' when teaching a concept, vocabulary word, or answering a question directly.
+- Use 'encouraging' when urging the student to try speaking or giving friendly support.
+- Use 'empathetic' when the user expresses frustration, confusion, or difficulty.
+- Use 'curious' when asking an engaging conversational follow-up question.
+- Use 'playful' when sharing lighthearted banter.
+- Use 'neutral' for calm everyday conversation.`;
 
     // Construct valid alternating Gemini contents
     const contents = [];
@@ -896,10 +906,34 @@ ${topicsList}
               .trim();
 
             if (aiReply) {
-              const replyLang = /[\u0C00-\u0C7F]/.test(aiReply) ? 'Telugu' : /[\u0900-\u097F]/.test(aiReply) ? 'Hindi' : 'English';
+              let emotion = 'neutral';
+              let cleanText = aiReply;
+              const emotionMatch = cleanText.match(/\[EMOTION:\s*([a-zA-Z_]+)\]/i);
+              if (emotionMatch) {
+                emotion = emotionMatch[1].toLowerCase();
+                cleanText = cleanText.replace(/\[EMOTION:\s*[a-zA-Z_]+\]/i, '').trim();
+              } else {
+                // Heuristic fallback for emotion
+                if (/your sentence should be|mistake|instead of|try to say/i.test(cleanText)) {
+                  emotion = 'correcting';
+                } else if (/great job|well done|excellent|perfect|superb|awesome|బలే|అద్భుతం|శాబాష్/i.test(cleanText)) {
+                  emotion = 'celebrating';
+                } else if (/try|can you try|repeat|let's practice/i.test(cleanText)) {
+                  emotion = 'encouraging';
+                } else if (/meaning|means|అంటే|వివరిస్తాను|కారణం|samjhao/i.test(cleanText)) {
+                  emotion = 'explaining';
+                } else if (/understand|difficult|hard|don't worry|no problem|relax/i.test(cleanText)) {
+                  emotion = 'empathetic';
+                } else if (/\?$/.test(cleanText)) {
+                  emotion = 'curious';
+                }
+              }
+
+              const replyLang = /[\u0C00-\u0C7F]/.test(cleanText) ? 'Telugu' : /[\u0900-\u097F]/.test(cleanText) ? 'Hindi' : 'English';
               return res.json({
                 success: true,
-                text: aiReply,
+                text: cleanText,
+                emotion,
                 detectedLanguage: replyLang,
                 model,
               });

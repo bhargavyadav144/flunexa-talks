@@ -68,6 +68,42 @@ export class TTSService {
     return this.lastSpokenTimestamp;
   }
 
+  private static volumeTimer: any = null;
+  private static activeVolumeCallback: ((vol: number) => void) | null = null;
+
+  private static startVolumeCadence(callback?: (vol: number) => void) {
+    this.stopVolumeCadence();
+    this.activeVolumeCallback = callback || null;
+    if (!callback) return;
+
+    let step = 0;
+    this.volumeTimer = setInterval(() => {
+      if (!TTSService.isSpeakingAudio && (!TTSService.currentAudio || TTSService.currentAudio.paused) && !(window.speechSynthesis && window.speechSynthesis.speaking)) {
+        TTSService.stopVolumeCadence();
+        return;
+      }
+      step++;
+      // Natural speech cadence: oscillates with pauses to simulate syllables and words
+      const cadence = Math.sin(step * 0.5);
+      const microJitter = Math.sin(step * 1.4) * 0.2;
+      const rawVol = Math.max(0, Math.min(0.95, cadence * 0.75 + microJitter));
+      if (TTSService.activeVolumeCallback) {
+        TTSService.activeVolumeCallback(rawVol);
+      }
+    }, 50);
+  }
+
+  private static stopVolumeCadence() {
+    if (this.volumeTimer) {
+      clearInterval(this.volumeTimer);
+      this.volumeTimer = null;
+    }
+    if (this.activeVolumeCallback) {
+      this.activeVolumeCallback(0);
+      this.activeVolumeCallback = null;
+    }
+  }
+
   // Generate Speech Audio Buffer via Google Cloud API server endpoint or fallback to Browser SpeechSynthesis
   static async speak(
     text: string,
@@ -75,7 +111,8 @@ export class TTSService {
     gender: 'MALE' | 'FEMALE' = 'FEMALE',
     onStart?: () => void,
     onEnd?: () => void,
-    onAudioBoundary?: (charIndex: number) => void
+    onAudioBoundary?: (charIndex: number) => void,
+    onVolumeChange?: (volume: number) => void
   ): Promise<void> {
     this.stop(); // Stop previous audio gracefully before starting new AI response
 
@@ -113,8 +150,10 @@ export class TTSService {
           this.currentAudio = audio;
 
           if (onStart) onStart();
+          this.startVolumeCadence(onVolumeChange);
 
           audio.onended = () => {
+            this.stopVolumeCadence();
             this.isSpeakingAudio = false;
             this.lastSpokenTimestamp = Date.now();
             this.activeText = '';
@@ -125,8 +164,9 @@ export class TTSService {
 
           audio.onerror = () => {
             console.warn('[TTS] Audio playback error, falling back to Web Speech API');
+            this.stopVolumeCadence();
             this.currentAudio = null;
-            this.speakWebSpeech(text, voiceConfig.code, onStart, onEnd, onAudioBoundary);
+            this.speakWebSpeech(text, voiceConfig.code, onStart, onEnd, onAudioBoundary, onVolumeChange);
           };
 
           try {
@@ -134,8 +174,9 @@ export class TTSService {
             return;
           } catch (playErr) {
             console.warn('[TTS] Audio play blocked by browser autoplay policy, falling back to Web Speech API:', playErr);
+            this.stopVolumeCadence();
             this.currentAudio = null;
-            this.speakWebSpeech(text, voiceConfig.code, onStart, onEnd, onAudioBoundary);
+            this.speakWebSpeech(text, voiceConfig.code, onStart, onEnd, onAudioBoundary, onVolumeChange);
             return;
           }
         }
@@ -145,7 +186,7 @@ export class TTSService {
     }
 
     // 2. Fallback to browser SpeechSynthesis API with realistic pitch and rate
-    this.speakWebSpeech(text, voiceConfig.code, onStart, onEnd, onAudioBoundary);
+    this.speakWebSpeech(text, voiceConfig.code, onStart, onEnd, onAudioBoundary, onVolumeChange);
   }
 
   // Web Speech API fallback
@@ -154,7 +195,8 @@ export class TTSService {
     langCode: string,
     onStart?: () => void,
     onEnd?: () => void,
-    onAudioBoundary?: (charIndex: number) => void
+    onAudioBoundary?: (charIndex: number) => void,
+    onVolumeChange?: (volume: number) => void
   ) {
     if (!('speechSynthesis' in window)) {
       this.isSpeakingAudio = false;
@@ -224,9 +266,11 @@ export class TTSService {
     utterance.onstart = () => {
       this.isSpeakingAudio = true;
       if (onStart) onStart();
+      this.startVolumeCadence(onVolumeChange);
     };
 
     utterance.onend = () => {
+      this.stopVolumeCadence();
       this.isSpeakingAudio = false;
       this.lastSpokenTimestamp = Date.now();
       this.activeText = '';
@@ -236,6 +280,7 @@ export class TTSService {
 
     utterance.onerror = (err) => {
       console.warn('[TTS] SpeechSynthesis error:', err);
+      this.stopVolumeCadence();
       this.isSpeakingAudio = false;
       this.lastSpokenTimestamp = Date.now();
       this.activeText = '';
@@ -255,6 +300,7 @@ export class TTSService {
         window.speechSynthesis.speak(utterance);
       } catch (err) {
         console.warn('[TTS] Synthesis speak error:', err);
+        this.stopVolumeCadence();
         this.isSpeakingAudio = false;
         this.lastSpokenTimestamp = Date.now();
         this.activeText = '';
@@ -265,6 +311,7 @@ export class TTSService {
   }
 
   static stop() {
+    this.stopVolumeCadence();
     this.isSpeakingAudio = false;
     this.lastSpokenTimestamp = Date.now();
     this.activeText = '';
