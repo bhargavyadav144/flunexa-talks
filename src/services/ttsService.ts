@@ -51,11 +51,21 @@ const LANGUAGE_VOICE_MAP: Record<string, { female: { code: string; name: string;
 export class TTSService {
   private static currentAudio: HTMLAudioElement | null = null;
   private static isSpeakingAudio = false;
+  private static activeText: string = '';
+  private static lastSpokenTimestamp: number = 0;
 
   static isCurrentlySpeaking(): boolean {
     if (this.currentAudio && !this.currentAudio.paused) return true;
     if ('speechSynthesis' in window && window.speechSynthesis.speaking) return true;
     return this.isSpeakingAudio;
+  }
+
+  static getActiveSpeakingText(): string {
+    return this.activeText;
+  }
+
+  static getLastSpokenTimestamp(): number {
+    return this.lastSpokenTimestamp;
   }
 
   // Generate Speech Audio Buffer via Google Cloud API server endpoint or fallback to Browser SpeechSynthesis
@@ -69,9 +79,12 @@ export class TTSService {
   ): Promise<void> {
     this.stop(); // Stop previous audio gracefully before starting new AI response
 
+    this.activeText = text;
+    this.isSpeakingAudio = true;
+    console.log(`[TTS] Speaking initiated (${text.length} chars): "${text.slice(0, 50)}..."`);
+
     const langEntry = LANGUAGE_VOICE_MAP[nativeLang] || LANGUAGE_VOICE_MAP['English'];
     const voiceConfig = gender === 'MALE' ? langEntry.male : langEntry.female;
-    this.isSpeakingAudio = true;
 
     try {
       // 1. Try server Google Cloud Text-To-Speech API endpoint first
@@ -97,7 +110,10 @@ export class TTSService {
 
           audio.onended = () => {
             this.isSpeakingAudio = false;
+            this.lastSpokenTimestamp = Date.now();
+            this.activeText = '';
             this.currentAudio = null;
+            console.log('[TTS] Cloud audio completed playback.');
             if (onEnd) onEnd();
           };
 
@@ -175,12 +191,17 @@ export class TTSService {
 
     utterance.onend = () => {
       this.isSpeakingAudio = false;
+      this.lastSpokenTimestamp = Date.now();
+      this.activeText = '';
+      console.log('[TTS] Browser SpeechSynthesis completed playback.');
       if (onEnd) onEnd();
     };
 
     utterance.onerror = (err) => {
       console.warn('[TTS] SpeechSynthesis error:', err);
       this.isSpeakingAudio = false;
+      this.lastSpokenTimestamp = Date.now();
+      this.activeText = '';
       if (onEnd) onEnd();
     };
 
@@ -198,6 +219,8 @@ export class TTSService {
       } catch (err) {
         console.warn('[TTS] Synthesis speak error:', err);
         this.isSpeakingAudio = false;
+        this.lastSpokenTimestamp = Date.now();
+        this.activeText = '';
         if (onStart) onStart();
         setTimeout(() => { if (onEnd) onEnd(); }, 1000);
       }
@@ -206,6 +229,8 @@ export class TTSService {
 
   static stop() {
     this.isSpeakingAudio = false;
+    this.lastSpokenTimestamp = Date.now();
+    this.activeText = '';
     if (this.currentAudio) {
       this.currentAudio.pause();
       this.currentAudio.currentTime = 0;
@@ -214,5 +239,6 @@ export class TTSService {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    console.log('[TTS] Playback stopped/halted.');
   }
 }

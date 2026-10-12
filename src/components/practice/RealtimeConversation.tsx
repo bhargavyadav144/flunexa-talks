@@ -9,6 +9,7 @@ import { AIService } from '../../services/aiService';
 import { soundService } from '../../services/soundService';
 import { TTSService } from '../../services/ttsService';
 import { TranslationService } from '../../services/translationService';
+import { EchoCancellationService } from '../../services/echoCancellationService';
 
 import {
   Mic,
@@ -177,7 +178,23 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
 
   // Process user speech when user pauses or submits
   const handleUserMessageReceived = async (userText: string) => {
-    if (!userText.trim()) return;
+    if (!userText || !userText.trim()) return;
+
+    // Safety guard: reject if userText matches active or recently spoken AI message (Acoustic Echo Prevention)
+    const activeAiSpeech = TTSService.getActiveSpeakingText();
+    const recentAiTexts = messages
+      .filter((m) => m.sender === 'ai')
+      .slice(-4)
+      .map((m) => m.text);
+    const lastSpoken = TTSService.getLastSpokenTimestamp();
+
+    const echoCheck = EchoCancellationService.isEchoOfAI(userText, activeAiSpeech, recentAiTexts, lastSpoken);
+    if (echoCheck.isEcho) {
+      console.warn(`[AEC] Blocked self-voice loop in handleUserMessageReceived: "${userText}" (${echoCheck.reason})`);
+      return;
+    }
+
+    console.log(`[CHAT] Submitting verified user message: "${userText}"`);
 
     // Instant interruption of any previous speaking/thinking
     handleBargeIn('new_message');
@@ -316,9 +333,16 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     setIsSessionActive(true);
     soundService.playTick();
 
-    await speechService.initMicrophoneWaveform((vol) => {
+    const micGranted = await speechService.initMicrophoneWaveform((vol) => {
       setMicWaveVolume(vol);
     });
+
+    if (!micGranted) {
+      console.warn('[MIC] Microphone permission not available.');
+      setErrorMessage('Microphone access is unavailable. Please allow microphone permission in your browser settings.');
+      setAvatarState('idle');
+      return;
+    }
 
     // Quick initial warm greeting only on first empty session
     if (messages.length === 0) {
@@ -342,30 +366,85 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       speakAIResponse(initialGreeting, 'wave', false, undefined, undefined, generationIdRef.current);
     }
 
-    // Start continuous speech recognition loop with automatic Barge-in Interruption
+    // Start continuous speech recognition loop with Acoustic Echo Cancellation & Barge-In
     const activateListeningLoop = () => {
       speechService.startListening(
         {
-          onStart: () => {},
+          onStart: () => {
+            console.log('[MIC] Speech recognition loop started.');
+          },
           onUserSpeakingDetected: () => {
-            // Immediate barge-in: stop AI speaking when user starts speaking
-            handleBargeIn('speech_detected');
-            setAvatarState('user_speaking');
+            // Only switch to user_speaking if AI is not currently speaking audio
+            if (!TTSService.isCurrentlySpeaking() && !speechService.isSpeaking()) {
+              setAvatarState('user_speaking');
+            }
           },
           onInterimResult: (transcript) => {
-            handleBargeIn('interim_speech');
+            const activeAiSpeech = TTSService.getActiveSpeakingText();
+            const recentAiTexts = messages
+              .filter((m) => m.sender === 'ai')
+              .slice(-3)
+              .map((m) => m.text);
+            const lastSpoken = TTSService.getLastSpokenTimestamp();
+
+            // Check if interim transcript is an echo of AI's own voice
+            const echoCheck = EchoCancellationService.isEchoOfAI(
+              transcript,
+              activeAiSpeech,
+              recentAiTexts,
+              lastSpoken
+            );
+
+            if (echoCheck.isEcho) {
+              console.log(`[AEC] Filtered interim speaker audio: "${transcript}" (${echoCheck.reason})`);
+              return;
+            }
+
+            // Genuine human speech detected! If AI is currently speaking, barge-in immediately!
+            if (TTSService.isCurrentlySpeaking() || speechService.isSpeaking()) {
+              console.log(`[BARGE_IN] Genuine human interruption detected during AI playback: "${transcript}". Halting AI.`);
+              handleBargeIn('human_speech_detected');
+            }
+
             setAvatarState('user_speaking');
             setLiveTranscript(transcript);
           },
           onFinalResult: (transcript) => {
-            if (transcript.trim()) {
-              handleUserMessageReceived(transcript);
+            if (!transcript || !transcript.trim()) return;
+
+            const activeAiSpeech = TTSService.getActiveSpeakingText();
+            const recentAiTexts = messages
+              .filter((m) => m.sender === 'ai')
+              .slice(-3)
+              .map((m) => m.text);
+            const lastSpoken = TTSService.getLastSpokenTimestamp();
+
+            // Check if final transcript is an echo of AI speech
+            const echoCheck = EchoCancellationService.isEchoOfAI(
+              transcript,
+              activeAiSpeech,
+              recentAiTexts,
+              lastSpoken
+            );
+
+            if (echoCheck.isEcho) {
+              console.warn(`[AEC] Filtered final transcript (AI self-voice echo): "${transcript}" (${echoCheck.reason})`);
+              setLiveTranscript('');
+              if (!TTSService.isCurrentlySpeaking() && !speechService.isSpeaking()) {
+                setAvatarState('listening');
+              }
+              return;
             }
+
+            console.log(`[STT] Captured verified human speech utterance: "${transcript}"`);
+            setLiveTranscript('');
+            handleUserMessageReceived(transcript);
           },
           onError: (err) => {
-            console.warn('Speech recognition notice:', err);
+            console.warn('[MIC] Speech recognition notice:', err);
             if (typeof err === 'string' && (err.includes('not-allowed') || err.includes('denied'))) {
               setErrorMessage('Microphone access was denied. Please allow microphone permission in your browser.');
+              setAvatarState('idle');
             }
           },
           onEnd: () => {
@@ -375,7 +454,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
                 if (isSessionActive) {
                   activateListeningLoop();
                 }
-              }, 400);
+              }, 300);
             }
           },
         },
