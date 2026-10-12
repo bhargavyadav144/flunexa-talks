@@ -14,6 +14,7 @@ const __dirname = path.dirname(__filename);
 
 const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const CHATS_FILE = path.join(DATA_DIR, 'chats.json');
 
 // Ensure data folder exists for local fallback
 try {
@@ -124,8 +125,22 @@ export async function initDb() {
           user_data JSONB,
           expires_at BIGINT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS saved_chats (
+          id VARCHAR(100) PRIMARY KEY,
+          user_id VARCHAR(100) REFERENCES users(id) ON DELETE CASCADE,
+          title VARCHAR(255) NOT NULL,
+          topic VARCHAR(255) NOT NULL,
+          native_language VARCHAR(50) DEFAULT 'Telugu',
+          duration_seconds INT DEFAULT 0,
+          messages_count INT DEFAULT 0,
+          fluency_score INT DEFAULT 75,
+          messages JSONB NOT NULL,
+          mistakes JSONB DEFAULT '[]'::jsonb,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
       `);
-      console.log('✅ [PostgreSQL] Schema verified: users & otps tables ready.');
+      console.log('✅ [PostgreSQL] Schema verified: users, otps & saved_chats tables ready.');
 
       // Check for demo user
       const res = await pool.query('SELECT id FROM users WHERE email = $1', ['demo@flunexatalk.com']);
@@ -431,4 +446,162 @@ export async function deleteOtpRecord(email, type) {
   }
 
   otpsStore.delete(key);
+}
+
+// -------------------------------------------------------------
+// SAVED CHATS PERSISTENCE (Supabase PostgreSQL with Local Fallback)
+// -------------------------------------------------------------
+
+function readChats() {
+  try {
+    if (fs.existsSync(CHATS_FILE)) {
+      const data = fs.readFileSync(CHATS_FILE, 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('Error reading chats file:', err);
+  }
+  return [];
+}
+
+function writeChats(chats) {
+  try {
+    fs.writeFileSync(CHATS_FILE, JSON.stringify(chats, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error writing chats file:', err);
+  }
+}
+
+export async function saveChatRecord(chatData, userId) {
+  const pool = getPool();
+  const id = chatData.id || `chat-${Date.now()}`;
+  const title = chatData.title || 'English Practice Session';
+  const topic = chatData.topic || 'General Conversation';
+  const nativeLanguage = chatData.nativeLanguage || 'Telugu';
+  const durationSeconds = Number(chatData.durationSeconds || 0);
+  const messagesCount = Array.isArray(chatData.messages) ? chatData.messages.length : Number(chatData.messagesCount || 0);
+  const fluencyScore = Number(chatData.fluencyScore || 75);
+  const messages = chatData.messages || [];
+  const mistakes = chatData.mistakes || [];
+
+  if (pool) {
+    try {
+      const query = `
+        INSERT INTO saved_chats (id, user_id, title, topic, native_language, duration_seconds, messages_count, fluency_score, messages, mistakes, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+          title = EXCLUDED.title,
+          duration_seconds = EXCLUDED.duration_seconds,
+          messages_count = EXCLUDED.messages_count,
+          fluency_score = EXCLUDED.fluency_score,
+          messages = EXCLUDED.messages,
+          mistakes = EXCLUDED.mistakes
+        RETURNING *;
+      `;
+      const res = await pool.query(query, [
+        id,
+        userId || null,
+        title,
+        topic,
+        nativeLanguage,
+        durationSeconds,
+        messagesCount,
+        fluencyScore,
+        JSON.stringify(messages),
+        JSON.stringify(mistakes),
+      ]);
+      return res.rows[0];
+    } catch (err) {
+      console.error('[PostgreSQL] saveChatRecord error:', err.message);
+    }
+  }
+
+  // Local fallback
+  const chats = readChats();
+  const record = {
+    id,
+    user_id: userId || 'local_user',
+    title,
+    topic,
+    nativeLanguage,
+    durationSeconds,
+    messagesCount,
+    fluencyScore,
+    messages,
+    mistakes,
+    created_at: new Date().toISOString(),
+  };
+  const filtered = chats.filter((c) => c.id !== id);
+  filtered.unshift(record);
+  writeChats(filtered);
+  return record;
+}
+
+export async function getUserSavedChats(userId) {
+  const pool = getPool();
+  if (pool) {
+    try {
+      let res;
+      if (userId) {
+        res = await pool.query('SELECT * FROM saved_chats WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
+      } else {
+        res = await pool.query('SELECT * FROM saved_chats ORDER BY created_at DESC LIMIT 50');
+      }
+      return res.rows.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        title: row.title,
+        topic: row.topic,
+        nativeLanguage: row.native_language,
+        durationSeconds: row.duration_seconds,
+        messagesCount: row.messages_count,
+        fluencyScore: row.fluency_score,
+        messages: typeof row.messages === 'string' ? JSON.parse(row.messages) : row.messages,
+        mistakes: typeof row.mistakes === 'string' ? JSON.parse(row.mistakes) : row.mistakes,
+        timestamp: new Date(row.created_at).toLocaleDateString(),
+      }));
+    } catch (err) {
+      console.error('[PostgreSQL] getUserSavedChats error:', err.message);
+    }
+  }
+
+  const chats = readChats();
+  const userChats = userId ? chats.filter((c) => c.user_id === userId || !c.user_id) : chats;
+  return userChats.map((c) => ({
+    id: c.id,
+    userId: c.user_id,
+    title: c.title,
+    topic: c.topic,
+    nativeLanguage: c.nativeLanguage,
+    durationSeconds: c.durationSeconds,
+    messagesCount: c.messagesCount,
+    fluencyScore: c.fluencyScore,
+    messages: c.messages || [],
+    mistakes: c.mistakes || [],
+    timestamp: c.created_at ? new Date(c.created_at).toLocaleDateString() : 'Recent',
+  }));
+}
+
+export async function deleteChatRecord(chatId, userId) {
+  const pool = getPool();
+  if (pool) {
+    try {
+      if (userId) {
+        const check = await pool.query('SELECT user_id FROM saved_chats WHERE id = $1', [chatId]);
+        if (check.rows.length > 0 && check.rows[0].user_id && check.rows[0].user_id !== userId) {
+          throw new Error('Unauthorized to delete this conversation.');
+        }
+      }
+      await pool.query('DELETE FROM saved_chats WHERE id = $1', [chatId]);
+      return true;
+    } catch (err) {
+      console.error('[PostgreSQL] deleteChatRecord error:', err.message);
+      throw err;
+    }
+  }
+
+  const chats = readChats();
+  const filtered = chats.filter((c) => c.id !== chatId);
+  writeChats(filtered);
+  return true;
 }

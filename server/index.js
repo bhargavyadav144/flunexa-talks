@@ -17,6 +17,9 @@ import {
   saveOtp,
   getOtpRecord,
   deleteOtpRecord,
+  saveChatRecord,
+  getUserSavedChats,
+  deleteChatRecord,
 } from './db.js';
 import {
   sendOtpEmail,
@@ -744,10 +747,10 @@ app.get('/api/leaderboard', (req, res) => {
   ]);
 });
 
-// Dynamic AI Chat & Question Answering Endpoint (Uses Gemini API with modern model fallback)
+// Dynamic AI Chat & Question Answering Endpoint (Gemini Flash with Anti-Repetition & Language Adherence)
 app.post('/api/chat', async (req, res) => {
   try {
-    const { userMessage, topic, history, avatarName, nativeLanguage } = req.body;
+    const { userMessage, topic, history, avatarName, nativeLanguage, askedQuestions, discussedTopics } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey || !apiKey.trim() || apiKey === 'YOUR_GEMINI_API_KEY_HERE') {
@@ -761,27 +764,49 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ success: false, error: 'User message is required.' });
     }
 
-    const systemPrompt = `You are Flunexa AI Coach, a friendly, patient, intelligent, and natural English-speaking tutor.
-Your name is ${avatarName || 'Nexa'}.
-The student's native language is ${nativeLanguage || 'Telugu'}.
-Current practice topic: "${topic || 'General Daily English Conversation'}".
+    const cleanLanguage = nativeLanguage || 'Telugu';
+    const cleanTopic = topic || 'General Daily English Conversation';
+    const questionsList = Array.isArray(askedQuestions) && askedQuestions.length > 0
+      ? askedQuestions.map((q, idx) => `${idx + 1}. "${q}"`).join('\n')
+      : '(No questions asked yet in this session)';
+    const topicsList = Array.isArray(discussedTopics) && discussedTopics.length > 0
+      ? discussedTopics.join(', ')
+      : cleanTopic;
 
-Teaching rules:
-1. Adapt your language to the user's English level. Use simple, natural English.
-2. Ask one question at a time. Keep normal spoken responses concise and natural (2 to 3 sentences max) so they sound lively and realistic when spoken aloud.
-3. Answer the user's actual question directly before suggesting another exercise.
-4. Understand imperfect English and infer the intended meaning when reasonable.
-5. If the user makes a meaningful grammatical mistake, politely provide a short, encouraging correction first (e.g. "Good try! A more natural sentence is '...', because..."), then continue the conversation. When the user's sentence is correct, do NOT invent an error.
-6. Support conversation practice, interviews, travel, college, workplace communication, shopping, and friendships.
-7. If the user asks in or requests Telugu/Hindi, explain difficult concepts in ${nativeLanguage || 'Telugu'} naturally.
-8. Encourage English practice without shaming the learner. Avoid repetitive greetings.
-9. Continue naturally from the conversation context and follow-up questions.`;
+    const systemPrompt = `You are Flunexa AI Coach, an encouraging, natural, intelligent, and real-time conversational English speaking tutor.
+Your name is ${avatarName || 'Nexa'}.
+The student's native language is ${cleanLanguage}.
+Current practice topic: "${cleanTopic}".
+
+CORE CONVERSATIONAL PRINCIPLES:
+1. SPOKEN VOICE PACING: Keep spoken responses natural, lively, and concise (1 to 3 sentences maximum, approx. 20-45 words). Never give dry textbook lectures.
+2. ANSWER DIRECTLY: If the student asks you a question or seeks an explanation (e.g. "what does that mean?", "who are you?", "can you explain in Telugu?"), answer their actual question first before asking any follow-up.
+3. CONTEXT-AWARE & EMPATHETIC: Acknowledge what the user actually said before pivoting. Understand imperfect grammar, incomplete phrases, and natural speech flow without judging.
+4. GENTLE CORRECTION: If the user makes a clear grammatical mistake (like "yesterday I go", "he don't", "I am agree"), give a brief, polite correction first (e.g. "Good try! A more natural sentence is '...', because..."), then continue smoothly. When the user's sentence is grammatically correct, NEVER invent an error.
+
+MANDATORY NO-REPETITION POLICY (CRITICAL):
+Previously asked questions in this chat:
+${questionsList}
+
+Previously touched topics:
+${topicsList}
+
+- You must NEVER ask any of the questions listed above, nor close paraphrases (e.g., NEVER repeat morning routine, breakfast, waking habits, college schedule if already asked).
+- Generate a dynamic, fresh question inspired by the user's latest response.
+- When a topic feels covered, change topics naturally (e.g., favourite films, street food, dream travel destinations, memorable childhood stories, funny accidents, tech breakthroughs).
+- Do NOT force a question if the user asked a question or asked for help.
+
+SELECTED LANGUAGE RULES FOR "${cleanLanguage}":
+- If ${cleanLanguage} is English: Respond in natural, accessible English only. Help them build conversational fluency.
+- If ${cleanLanguage} is Telugu: Encourage English speaking, but if the user speaks Telugu, asks for Telugu ("Telugu lo cheppu"), or struggles with a concept, explain it warmly in natural, friendly Telugu.
+- If ${cleanLanguage} is Hindi: Encourage English, and explain difficult words in natural Hindi when requested.
+- If the user changes language or asks for explanations in ${cleanLanguage}, adapt immediately without resetting the chat.`;
 
     // Construct valid alternating Gemini contents
     const contents = [];
 
     if (history && Array.isArray(history)) {
-      const recent = history.slice(-10);
+      const recent = history.slice(-8);
       for (const msg of recent) {
         if (!msg.text || !msg.text.trim()) continue;
         const role = msg.sender === 'user' ? 'user' : 'model';
@@ -821,7 +846,7 @@ Teaching rules:
       contents,
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 600,
+        maxOutputTokens: 280,
       },
     };
 
@@ -886,6 +911,82 @@ Teaching rules:
       success: false,
       error: error.message || 'Internal AI service error.',
     });
+  }
+});
+
+// -------------------------------------------------------------
+// SAVED CHATS API ENDPOINTS
+// -------------------------------------------------------------
+
+// Save completed conversation
+app.post('/api/chats/save', async (req, res) => {
+  try {
+    const chatData = req.body;
+    if (!chatData) {
+      return res.status(400).json({ error: 'Chat data is required.' });
+    }
+
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        userId = decoded.userId;
+      } catch (e) {}
+    }
+
+    const saved = await saveChatRecord(chatData, userId);
+    console.log(`[Chats] Successfully saved chat "${saved.title}" (ID: ${saved.id})`);
+    return res.json({ success: true, chat: saved });
+  } catch (err) {
+    console.error('Error saving chat:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to save conversation.' });
+  }
+});
+
+// Fetch saved conversations
+app.get('/api/chats', async (req, res) => {
+  try {
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        userId = decoded.userId;
+      } catch (e) {}
+    }
+
+    const chats = await getUserSavedChats(userId);
+    return res.json({ success: true, chats });
+  } catch (err) {
+    console.error('Error fetching chats:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to fetch conversations.' });
+  }
+});
+
+// Delete saved conversation
+app.delete('/api/chats/:id', async (req, res) => {
+  try {
+    const chatId = req.params.id;
+    if (!chatId) {
+      return res.status(400).json({ error: 'Chat ID is required.' });
+    }
+
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        userId = decoded.userId;
+      } catch (e) {}
+    }
+
+    await deleteChatRecord(chatId, userId);
+    console.log(`[Chats] Deleted chat ID: ${chatId}`);
+    return res.json({ success: true, message: 'Conversation deleted successfully.' });
+  } catch (err) {
+    console.error('Error deleting chat:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to delete conversation.' });
   }
 });
 

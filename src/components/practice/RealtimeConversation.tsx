@@ -64,6 +64,125 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
   const timerRef = useRef<any>(null);
   const activeAbortControllerRef = useRef<AbortController | null>(null);
   const generationIdRef = useRef<number>(0);
+  const isSessionActiveRef = useRef<boolean>(false);
+  const askedQuestionsRef = useRef<string[]>([]);
+  const discussedTopicsRef = useRef<string[]>([initialTopic]);
+
+  // Language code mapping for Speech Recognition
+  const getSpeechLangCode = (lang: NativeLanguage): string => {
+    switch (lang) {
+      case 'Telugu': return 'en-IN';
+      case 'Hindi': return 'en-IN';
+      case 'Tamil': return 'en-IN';
+      case 'Kannada': return 'en-IN';
+      case 'Malayalam': return 'en-IN';
+      case 'Bengali': return 'en-IN';
+      case 'Marathi': return 'en-IN';
+      case 'Gujarati': return 'en-IN';
+      case 'English':
+      default:
+        return 'en-IN';
+    }
+  };
+
+  // Dedicated Continuous Listening Loop Activator
+  const ensureListeningActive = () => {
+    if (!isSessionActiveRef.current) return;
+    const targetLang = getSpeechLangCode(user.nativeLanguage);
+
+    speechService.ensureListening(
+      {
+        onStart: () => {
+          console.log('[MIC] Speech recognition loop active & listening.');
+          if (!TTSService.isCurrentlySpeaking() && !speechService.isSpeaking()) {
+            setAvatarState('listening');
+          }
+        },
+        onUserSpeakingDetected: () => {
+          if (!TTSService.isCurrentlySpeaking() && !speechService.isSpeaking()) {
+            setAvatarState('user_speaking');
+          }
+        },
+        onInterimResult: (transcript) => {
+          const activeAiSpeech = TTSService.getActiveSpeakingText();
+          const recentAiTexts = messages
+            .filter((m) => m.sender === 'ai')
+            .slice(-3)
+            .map((m) => m.text);
+          const lastSpoken = TTSService.getLastSpokenTimestamp();
+
+          // Reject speaker audio bleed
+          const echoCheck = EchoCancellationService.isEchoOfAI(
+            transcript,
+            activeAiSpeech,
+            recentAiTexts,
+            lastSpoken
+          );
+
+          if (echoCheck.isEcho) {
+            console.log(`[AEC] Filtered interim speaker audio: "${transcript}" (${echoCheck.reason})`);
+            return;
+          }
+
+          // Genuine human speech detected! Instant barge-in interruption of active AI speech
+          if (TTSService.isCurrentlySpeaking() || speechService.isSpeaking()) {
+            console.log(`[BARGE_IN] Human interruption detected: "${transcript}". Halting AI.`);
+            handleBargeIn('human_speech_detected');
+          }
+
+          setAvatarState('user_speaking');
+          setLiveTranscript(transcript);
+        },
+        onFinalResult: (transcript) => {
+          if (!transcript || !transcript.trim()) return;
+
+          const activeAiSpeech = TTSService.getActiveSpeakingText();
+          const recentAiTexts = messages
+            .filter((m) => m.sender === 'ai')
+            .slice(-3)
+            .map((m) => m.text);
+          const lastSpoken = TTSService.getLastSpokenTimestamp();
+
+          const echoCheck = EchoCancellationService.isEchoOfAI(
+            transcript,
+            activeAiSpeech,
+            recentAiTexts,
+            lastSpoken
+          );
+
+          if (echoCheck.isEcho) {
+            console.warn(`[AEC] Filtered final echo: "${transcript}" (${echoCheck.reason})`);
+            setLiveTranscript('');
+            if (!TTSService.isCurrentlySpeaking() && !speechService.isSpeaking()) {
+              setAvatarState('listening');
+            }
+            return;
+          }
+
+          console.log(`[STT] User utterance confirmed: "${transcript}"`);
+          setLiveTranscript('');
+          handleUserMessageReceived(transcript);
+        },
+        onError: (err) => {
+          console.warn('[MIC] Speech recognition notice:', err);
+          if (typeof err === 'string' && (err.includes('not-allowed') || err.includes('denied'))) {
+            setErrorMessage('Microphone access was denied. Please allow microphone permission in your browser.');
+            setAvatarState('idle');
+          }
+        },
+        onEnd: () => {
+          if (isSessionActiveRef.current) {
+            setTimeout(() => {
+              if (isSessionActiveRef.current) {
+                ensureListeningActive();
+              }
+            }, 150);
+          }
+        },
+      },
+      targetLang
+    );
+  };
 
   useEffect(() => {
     if (isChatDrawerOpen) {
@@ -74,10 +193,12 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
   // Session duration timer
   useEffect(() => {
     if (isSessionActive) {
+      isSessionActiveRef.current = true;
       timerRef.current = setInterval(() => {
         setDurationSeconds((prev) => prev + 1);
       }, 1000);
     } else {
+      isSessionActiveRef.current = false;
       clearInterval(timerRef.current);
     }
     return () => clearInterval(timerRef.current);
@@ -109,6 +230,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     startConversationSession();
 
     return () => {
+      isSessionActiveRef.current = false;
       handleBargeIn('unmount');
       speechService.stopSpeaking();
       speechService.stopListening();
@@ -138,6 +260,9 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
 
     if (isAudioMuted) {
       setAvatarState('listening');
+      if (isSessionActiveRef.current) {
+        ensureListeningActive();
+      }
       return;
     }
 
@@ -172,6 +297,10 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) return;
         setAvatarState(nextState === 'sleepy' ? 'sleepy' : 'listening');
         setMouthVolume(0);
+        // CRITICAL: Ensure continuous microphone listening immediately after AI speech ends!
+        if (isSessionActiveRef.current) {
+          ensureListeningActive();
+        }
       }
     );
   };
@@ -238,13 +367,26 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         history,
         selectedAvatar === 'leo' ? 'Leo' : 'Nexa',
         user.nativeLanguage,
-        controller.signal
+        controller.signal,
+        askedQuestionsRef.current.slice(-15),
+        discussedTopicsRef.current.slice(-8)
       );
 
       // Verify request wasn't interrupted in-flight
       if (currentGenId !== generationIdRef.current) {
         console.log('[AI] Stale response safely discarded.');
         return;
+      }
+
+      // Track asked questions in anti-repetition ref
+      const questionMatches = aiResult.text.match(/[^.!?\n]+(?:\?)/g);
+      if (questionMatches) {
+        questionMatches.forEach((q) => {
+          const cleanQ = q.trim();
+          if (cleanQ && !askedQuestionsRef.current.includes(cleanQ)) {
+            askedQuestionsRef.current.push(cleanQ);
+          }
+        });
       }
 
       if (aiResult.detectedLanguage) {
@@ -286,6 +428,9 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       console.error('[AI] Generation error:', err);
       setErrorMessage('Could not connect to AI Coach. Please try speaking again.');
       setAvatarState('listening');
+      if (isSessionActiveRef.current) {
+        ensureListeningActive();
+      }
     } finally {
       if (activeAbortControllerRef.current === controller) {
         activeAbortControllerRef.current = null;
@@ -302,6 +447,8 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     setLatestCorrection(null);
     setDurationSeconds(0);
     setErrorMessage(null);
+    askedQuestionsRef.current = [];
+    discussedTopicsRef.current = [initialTopic];
 
     let initialGreeting = '';
     if (user.nativeLanguage === 'Telugu') {
@@ -330,6 +477,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       return;
     }
 
+    isSessionActiveRef.current = true;
     setIsSessionActive(true);
     soundService.playTick();
 
@@ -366,107 +514,12 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       speakAIResponse(initialGreeting, 'wave', false, undefined, undefined, generationIdRef.current);
     }
 
-    // Start continuous speech recognition loop with Acoustic Echo Cancellation & Barge-In
-    const activateListeningLoop = () => {
-      speechService.startListening(
-        {
-          onStart: () => {
-            console.log('[MIC] Speech recognition loop started.');
-          },
-          onUserSpeakingDetected: () => {
-            // Only switch to user_speaking if AI is not currently speaking audio
-            if (!TTSService.isCurrentlySpeaking() && !speechService.isSpeaking()) {
-              setAvatarState('user_speaking');
-            }
-          },
-          onInterimResult: (transcript) => {
-            const activeAiSpeech = TTSService.getActiveSpeakingText();
-            const recentAiTexts = messages
-              .filter((m) => m.sender === 'ai')
-              .slice(-3)
-              .map((m) => m.text);
-            const lastSpoken = TTSService.getLastSpokenTimestamp();
-
-            // Check if interim transcript is an echo of AI's own voice
-            const echoCheck = EchoCancellationService.isEchoOfAI(
-              transcript,
-              activeAiSpeech,
-              recentAiTexts,
-              lastSpoken
-            );
-
-            if (echoCheck.isEcho) {
-              console.log(`[AEC] Filtered interim speaker audio: "${transcript}" (${echoCheck.reason})`);
-              return;
-            }
-
-            // Genuine human speech detected! If AI is currently speaking, barge-in immediately!
-            if (TTSService.isCurrentlySpeaking() || speechService.isSpeaking()) {
-              console.log(`[BARGE_IN] Genuine human interruption detected during AI playback: "${transcript}". Halting AI.`);
-              handleBargeIn('human_speech_detected');
-            }
-
-            setAvatarState('user_speaking');
-            setLiveTranscript(transcript);
-          },
-          onFinalResult: (transcript) => {
-            if (!transcript || !transcript.trim()) return;
-
-            const activeAiSpeech = TTSService.getActiveSpeakingText();
-            const recentAiTexts = messages
-              .filter((m) => m.sender === 'ai')
-              .slice(-3)
-              .map((m) => m.text);
-            const lastSpoken = TTSService.getLastSpokenTimestamp();
-
-            // Check if final transcript is an echo of AI speech
-            const echoCheck = EchoCancellationService.isEchoOfAI(
-              transcript,
-              activeAiSpeech,
-              recentAiTexts,
-              lastSpoken
-            );
-
-            if (echoCheck.isEcho) {
-              console.warn(`[AEC] Filtered final transcript (AI self-voice echo): "${transcript}" (${echoCheck.reason})`);
-              setLiveTranscript('');
-              if (!TTSService.isCurrentlySpeaking() && !speechService.isSpeaking()) {
-                setAvatarState('listening');
-              }
-              return;
-            }
-
-            console.log(`[STT] Captured verified human speech utterance: "${transcript}"`);
-            setLiveTranscript('');
-            handleUserMessageReceived(transcript);
-          },
-          onError: (err) => {
-            console.warn('[MIC] Speech recognition notice:', err);
-            if (typeof err === 'string' && (err.includes('not-allowed') || err.includes('denied'))) {
-              setErrorMessage('Microphone access was denied. Please allow microphone permission in your browser.');
-              setAvatarState('idle');
-            }
-          },
-          onEnd: () => {
-            // Auto-restart recognition if session is active
-            if (isSessionActive) {
-              setTimeout(() => {
-                if (isSessionActive) {
-                  activateListeningLoop();
-                }
-              }, 300);
-            }
-          },
-        },
-        'en-IN'
-      );
-    };
-
-    activateListeningLoop();
+    // Activate the continuous speech recognition loop
+    ensureListeningActive();
   };
 
-
   const pauseSession = () => {
+    isSessionActiveRef.current = false;
     setIsSessionActive(false);
     setAvatarState('paused');
     TTSService.stop();
@@ -510,6 +563,16 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       aiSummary: analysis.aiFeedback,
       nativeLanguage: user.nativeLanguage,
     });
+
+    // Sync to backend database
+    fetch('/api/chats/save', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('flunexa_auth_token') || ''}`,
+      },
+      body: JSON.stringify(savedChatEntry),
+    }).catch((err) => console.warn('[Chats] Backend sync error:', err.message));
 
     setSavedNotification(`Chat saved as "${analyzedTitle}"!`);
     soundService.playAchievementFanfare();
@@ -715,6 +778,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
           <Avatar3D
             isSpeaking={avatarState === 'speaking' || avatarState === 'celebrating' || avatarState === 'correcting'}
             avatarState={avatarState}
+            mouthVolume={mouthVolume}
           />
         </div>
 

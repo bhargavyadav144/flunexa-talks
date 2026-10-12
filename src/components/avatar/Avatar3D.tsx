@@ -3,12 +3,14 @@ import React, { useEffect, useState } from 'react';
 interface Avatar3DProps {
   isSpeaking: boolean;
   avatarState?: 'idle' | 'speaking' | 'celebrating' | 'correcting' | 'sleepy' | 'wave' | 'listening' | 'user_speaking' | 'thinking' | 'interrupted' | 'paused';
+  mouthVolume?: number;
   onClick?: () => void;
 }
 
 export const Avatar3D: React.FC<Avatar3DProps> = ({
   isSpeaking,
   avatarState = 'idle',
+  mouthVolume = 0,
   onClick,
 }) => {
   const [pulseFrame, setPulseFrame] = useState(0);
@@ -17,9 +19,9 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({
   // Dynamic animation frame timer for vivid expressive robot motion
   useEffect(() => {
     const interval = setInterval(() => {
-      setPulseFrame((prev) => (prev + 1) % 12);
-      setHeadTilt(Math.sin(Date.now() / 300) * 4);
-    }, 100);
+      setPulseFrame((prev) => (prev + 1) % 16);
+      setHeadTilt(Math.sin(Date.now() / 320) * 4);
+    }, 90);
     return () => clearInterval(interval);
   }, []);
 
@@ -27,28 +29,48 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({
   const getGlowColor = () => {
     switch (avatarState) {
       case 'speaking':
-        return 'rgba(6, 182, 212, 0.75)';
+        return 'rgba(6, 182, 212, 0.85)';
       case 'listening':
       case 'user_speaking':
-        return 'rgba(16, 185, 129, 0.85)';
+        return 'rgba(16, 185, 129, 0.9)';
       case 'celebrating':
-        return 'rgba(236, 72, 153, 0.9)';
+        return 'rgba(236, 72, 153, 0.95)';
       case 'correcting':
-        return 'rgba(245, 158, 11, 0.85)';
+        return 'rgba(245, 158, 11, 0.9)';
       case 'interrupted':
-        return 'rgba(249, 115, 22, 0.9)';
+        return 'rgba(249, 115, 22, 0.95)';
+      case 'wave':
+        return 'rgba(56, 189, 248, 0.9)';
       case 'sleepy':
         return 'rgba(139, 92, 246, 0.8)';
       case 'thinking':
-        return 'rgba(245, 158, 11, 0.75)';
+        return 'rgba(245, 158, 11, 0.85)';
       default:
-        return 'rgba(99, 102, 241, 0.4)';
+        return 'rgba(99, 102, 241, 0.45)';
     }
   };
 
   // Full-body reactive expressions based on human interaction
   const getTransformStyle = () => {
-    const bob = Math.sin(pulseFrame * 0.8) * 6;
+    const bob = Math.sin(pulseFrame * 0.7) * 5;
+
+    if (avatarState === 'wave') {
+      // Cheerful greeting wave & bounce
+      const waveY = -12 + Math.sin(pulseFrame * 1.8) * 8;
+      const waveRot = Math.sin(pulseFrame * 1.5) * 8;
+      return `scale(1.06) translateY(${waveY}px) rotate(${waveRot}deg)`;
+    }
+
+    if (avatarState === 'interrupted') {
+      // Quick upright snap to attention when interrupted by user
+      return `scale(1.02) translateY(-4px) rotate(2deg)`;
+    }
+
+    if (avatarState === 'thinking') {
+      // Inquisitive head tilt & gentle hover
+      const thinkBob = Math.sin(pulseFrame * 0.9) * 4;
+      return `scale(1.02) translateY(${thinkBob - 6}px) rotate(5deg)`;
+    }
 
     if (avatarState === 'celebrating') {
       // Energetic victory jump & dance
@@ -63,21 +85,22 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({
     }
 
     if (avatarState === 'sleepy') {
-      // Relaxed downward posture
       return `scale(0.95) translateY(10px) rotate(5deg)`;
     }
 
-    if (avatarState === 'listening') {
-      // Leaning forward eagerly listening to user
-      const listenPulse = 1 + (pulseFrame % 2 === 0 ? 0.03 : 0);
+    if (avatarState === 'listening' || avatarState === 'user_speaking') {
+      // Leaning forward eagerly listening to human speech
+      const listenPulse = 1 + (avatarState === 'user_speaking' ? 0.04 : 0.02);
       return `scale(${listenPulse}) translateY(${bob - 6}px) rotate(${headTilt * 0.4}deg)`;
     }
 
     if (isSpeaking || avatarState === 'speaking') {
-      // Continuous expressive talk bounce & head tilt
-      const talkY = pulseFrame % 2 === 0 ? -10 : -2;
+      // Continuous expressive talk bounce synchronized with mouthVolume
+      const dynamicBounce = (mouthVolume > 0 ? mouthVolume * 10 : 6);
+      const talkY = (pulseFrame % 2 === 0 ? -dynamicBounce : -2);
       const talkRot = Math.sin(pulseFrame * 0.6) * 3;
-      return `scale(${1.02 + (pulseFrame % 2) * 0.03}) translateY(${talkY}px) rotate(${talkRot}deg)`;
+      const talkScale = 1.02 + (mouthVolume * 0.05);
+      return `scale(${talkScale}) translateY(${talkY}px) rotate(${talkRot}deg)`;
     }
 
     // Natural idle float

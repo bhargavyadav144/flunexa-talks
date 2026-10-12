@@ -22,6 +22,36 @@ export const SavedChatsView: React.FC = () => {
     savedChats.length > 0 ? savedChats[0] : null
   );
 
+  React.useEffect(() => {
+    if (selectedChat && !savedChats.some((c) => c.id === selectedChat.id)) {
+      setSelectedChat(savedChats.length > 0 ? savedChats[0] : null);
+    } else if (!selectedChat && savedChats.length > 0) {
+      setSelectedChat(savedChats[0]);
+    }
+  }, [savedChats]);
+
+  const handleDeleteChat = async (chatToDelete: SavedChat) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${chatToDelete.title}"? This action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    deleteSavedChat(chatToDelete.id);
+    const remaining = savedChats.filter((c) => c.id !== chatToDelete.id);
+    setSelectedChat(remaining.length > 0 ? remaining[0] : null);
+
+    try {
+      await fetch(`/api/chats/${chatToDelete.id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('flunexa_auth_token') || ''}`,
+        },
+      });
+    } catch (err) {
+      console.warn('[Chats] Backend deletion notice:', err);
+    }
+  };
+
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: '20px 20px 80px' }}>
       {/* Top Banner */}
@@ -165,7 +195,7 @@ export const SavedChatsView: React.FC = () => {
                 </div>
 
                 <button
-                  onClick={() => deleteSavedChat(selectedChat.id)}
+                  onClick={() => handleDeleteChat(selectedChat)}
                   className="btn-icon"
                   title="Delete this saved chat"
                   style={{ color: '#ef4444' }}

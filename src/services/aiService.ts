@@ -849,7 +849,9 @@ export class AIService {
     history: { sender: 'ai' | 'user'; text: string }[],
     avatarName: string = 'Nexa',
     nativeLang: NativeLanguage = 'Telugu',
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    askedQuestions?: string[],
+    discussedTopics?: string[]
   ): Promise<{ text: string; mistakes: Mistake[]; funnyReaction: string; detectedLanguage?: NativeLanguage; detectedAvatar?: AvatarId }> {
     // 1. Detect if user is requesting avatar or language switch
     let detectedLanguage: NativeLanguage | undefined;
@@ -878,6 +880,8 @@ export class AIService {
           history,
           avatarName,
           nativeLanguage: nativeLang,
+          askedQuestions: askedQuestions || [],
+          discussedTopics: discussedTopics || [],
         }),
         signal,
       });

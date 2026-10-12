@@ -20,6 +20,11 @@ export class SpeechService {
   private dataArray: any = null;
   private animFrameId: number | null = null;
 
+  // Check if speech recognition is actively capturing audio
+  public getIsListening(): boolean {
+    return this.isListening;
+  }
+
   // Check if browser supports speech recognition
   public static isRecognitionSupported(): boolean {
     if (typeof window === 'undefined') return false;
@@ -203,8 +208,17 @@ export class SpeechService {
     return window.speechSynthesis.speaking;
   }
 
+  private activeHandlers: SpeechRecognitionHandlers | null = null;
+  private currentLangCode: string = 'en-IN';
+  private shouldKeepListening: boolean = false;
+  private restartTimeout: any = null;
+
   // Start speech recognition with automatic Voice Activity Detection & interruption
   public startListening(handlers: SpeechRecognitionHandlers, langCode: string = 'en-IN') {
+    this.shouldKeepListening = true;
+    this.activeHandlers = handlers;
+    this.currentLangCode = langCode || 'en-IN';
+
     // Safely cleanup previous recognition instance if active
     if (this.recognition) {
       try {
@@ -235,8 +249,7 @@ export class SpeechService {
       this.recognition = new SpeechRecognition();
       this.recognition.continuous = true;
       this.recognition.interimResults = true;
-      // Use en-IN / en-US for high accuracy ESL recognition
-      this.recognition.lang = langCode || 'en-IN';
+      this.recognition.lang = this.currentLangCode;
 
       let accumulatedFinal = '';
 
@@ -265,14 +278,15 @@ export class SpeechService {
           handlers.onInterimResult(currentStream);
         }
 
-        // Reset silence timer: when user pauses for 1.0s, finalize turn
+        // Fast silence detection: when user finishes speaking (650ms pause), finalize turn
         if (this.silenceTimer) clearTimeout(this.silenceTimer);
         this.silenceTimer = setTimeout(() => {
-          if (currentStream && handlers.onFinalResult) {
-            handlers.onFinalResult(currentStream);
+          const finalizedText = (accumulatedFinal + ' ' + interim).trim();
+          if (finalizedText && handlers.onFinalResult) {
             accumulatedFinal = '';
+            handlers.onFinalResult(finalizedText);
           }
-        }, 1000);
+        }, 650);
       };
 
       this.recognition.onerror = (event: any) => {
@@ -281,15 +295,29 @@ export class SpeechService {
         if (event.error !== 'no-speech' && handlers.onError) {
           handlers.onError(event.error);
         }
-        // Recover continuous listening loop on recoverable notices
-        if (handlers.onEnd) {
-          setTimeout(() => handlers.onEnd && handlers.onEnd(), 150);
+        // Auto-recover continuous listening loop on transient notices
+        if (this.shouldKeepListening) {
+          if (this.restartTimeout) clearTimeout(this.restartTimeout);
+          this.restartTimeout = setTimeout(() => {
+            if (this.shouldKeepListening && !this.isListening && this.activeHandlers) {
+              this.startListening(this.activeHandlers, this.currentLangCode);
+            }
+          }, 200);
         }
       };
 
       this.recognition.onend = () => {
         this.isListening = false;
         if (handlers.onEnd) handlers.onEnd();
+        // Seamless background restart if session remains active
+        if (this.shouldKeepListening) {
+          if (this.restartTimeout) clearTimeout(this.restartTimeout);
+          this.restartTimeout = setTimeout(() => {
+            if (this.shouldKeepListening && !this.isListening && this.activeHandlers) {
+              this.startListening(this.activeHandlers, this.currentLangCode);
+            }
+          }, 150);
+        }
       };
 
       this.recognition.start();
@@ -300,8 +328,22 @@ export class SpeechService {
     }
   }
 
-  // Stop listening
+  // Ensure recognition is actively capturing speech without interruption
+  public ensureListening(handlers?: SpeechRecognitionHandlers, langCode?: string) {
+    this.shouldKeepListening = true;
+    if (handlers) this.activeHandlers = handlers;
+    if (langCode) this.currentLangCode = langCode;
+
+    if (!this.isListening && this.activeHandlers) {
+      console.log('[MIC] ensureListening: Resuming active listening loop...');
+      this.startListening(this.activeHandlers, this.currentLangCode);
+    }
+  }
+
+  // Stop listening permanently (on user pause or end of session)
   public stopListening() {
+    this.shouldKeepListening = false;
+    if (this.restartTimeout) clearTimeout(this.restartTimeout);
     if (this.silenceTimer) clearTimeout(this.silenceTimer);
     if (this.recognition && this.isListening) {
       try {
