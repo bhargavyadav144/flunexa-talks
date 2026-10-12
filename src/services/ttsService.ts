@@ -83,7 +83,13 @@ export class TTSService {
     this.isSpeakingAudio = true;
     console.log(`[TTS] Speaking initiated (${text.length} chars): "${text.slice(0, 50)}..."`);
 
-    const langEntry = LANGUAGE_VOICE_MAP[nativeLang] || LANGUAGE_VOICE_MAP['English'];
+    // Detect actual language of response text based on Unicode script
+    const hasTelugu = /[\u0C00-\u0C7F]/.test(text);
+    const hasHindi = /[\u0900-\u097F]/.test(text);
+    const hasTamil = /[\u0B80-\u0BFF]/.test(text);
+    const actualLang: NativeLanguage = hasTelugu ? 'Telugu' : hasHindi ? 'Hindi' : hasTamil ? 'Tamil' : 'English';
+
+    const langEntry = LANGUAGE_VOICE_MAP[actualLang] || LANGUAGE_VOICE_MAP['English'];
     const voiceConfig = gender === 'MALE' ? langEntry.male : langEntry.female;
 
     try {
@@ -162,8 +168,12 @@ export class TTSService {
       window.speechSynthesis.resume();
     } catch (e) {}
 
+    const hasTelugu = /[\u0C00-\u0C7F]/.test(text);
+    const hasHindi = /[\u0900-\u097F]/.test(text);
+    const resolvedLangCode = hasTelugu ? 'te-IN' : hasHindi ? 'hi-IN' : (langCode || 'en-US');
+
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = langCode || 'en-US';
+    utterance.lang = resolvedLangCode;
     utterance.rate = 0.95;
     utterance.pitch = 1.05;
 
@@ -176,9 +186,36 @@ export class TTSService {
       };
     }
 
-    const matchingVoice = voices.find(
-      (v) => v.lang.startsWith(langCode.slice(0, 2)) || v.lang === langCode || v.lang.startsWith('en')
-    );
+    let matchingVoice: SpeechSynthesisVoice | null = null;
+
+    if (hasTelugu) {
+      // Prioritize authentic Telugu voices
+      matchingVoice = voices.find(
+        (v) => v.lang.startsWith('te') || v.lang.includes('te-IN') || v.name.toLowerCase().includes('telugu')
+      ) || null;
+
+      // Fallback: Indian English voice with Indian phonetic support
+      if (!matchingVoice) {
+        matchingVoice = voices.find(
+          (v) => v.lang.startsWith('en-IN') || v.name.toLowerCase().includes('india') || v.name.toLowerCase().includes('neerja') || v.name.toLowerCase().includes('heera') || v.name.toLowerCase().includes('prabhat')
+        ) || null;
+      }
+    } else if (hasHindi) {
+      matchingVoice = voices.find(
+        (v) => v.lang.startsWith('hi') || v.name.toLowerCase().includes('hindi')
+      ) || null;
+      if (!matchingVoice) {
+        matchingVoice = voices.find(
+          (v) => v.lang.startsWith('en-IN') || v.name.toLowerCase().includes('india')
+        ) || null;
+      }
+    } else {
+      matchingVoice = voices.find(
+        (v) => v.lang.startsWith('en-IN') || v.name.toLowerCase().includes('natural') || v.name.toLowerCase().includes('google')
+      ) || voices.find(
+        (v) => v.lang.startsWith('en')
+      ) || voices[0] || null;
+    }
 
     if (matchingVoice) {
       utterance.voice = matchingVoice;

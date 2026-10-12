@@ -150,6 +150,7 @@ export interface ConversationMessage {
   audioDuration?: number;
   mistakesDetected?: Mistake[];
   funnyReaction?: string;
+  detectedLanguage?: string;
 }
 
 export interface SavedChat {

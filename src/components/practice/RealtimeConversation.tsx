@@ -69,26 +69,38 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
   const discussedTopicsRef = useRef<string[]>([initialTopic]);
 
   // Language code mapping for Speech Recognition
-  const getSpeechLangCode = (lang: NativeLanguage): string => {
+  const getSpeechLangCode = (lang: NativeLanguage | string): string => {
     switch (lang) {
-      case 'Telugu': return 'en-IN';
-      case 'Hindi': return 'en-IN';
-      case 'Tamil': return 'en-IN';
-      case 'Kannada': return 'en-IN';
-      case 'Malayalam': return 'en-IN';
-      case 'Bengali': return 'en-IN';
-      case 'Marathi': return 'en-IN';
-      case 'Gujarati': return 'en-IN';
+      case 'Telugu': return 'te-IN';
+      case 'Hindi': return 'hi-IN';
+      case 'Tamil': return 'ta-IN';
+      case 'Kannada': return 'kn-IN';
+      case 'Malayalam': return 'ml-IN';
+      case 'Bengali': return 'bn-IN';
+      case 'Marathi': return 'mr-IN';
+      case 'Gujarati': return 'gu-IN';
       case 'English':
       default:
         return 'en-IN';
     }
   };
 
+  // Active Speech Recognition language ('te-IN', 'hi-IN', 'en-IN')
+  const [speechLang, setSpeechLang] = useState<string>(() => getSpeechLangCode(user.nativeLanguage));
+
+  const handleSwitchSpeechLang = (newLangCode: string) => {
+    console.log(`[STT] User switched speech recognition language to: ${newLangCode}`);
+    setSpeechLang(newLangCode);
+    speechService.setLanguage(newLangCode);
+    if (isSessionActiveRef.current) {
+      ensureListeningActive(newLangCode);
+    }
+  };
+
   // Dedicated Continuous Listening Loop Activator
-  const ensureListeningActive = () => {
+  const ensureListeningActive = (overrideLangCode?: string) => {
     if (!isSessionActiveRef.current) return;
-    const targetLang = getSpeechLangCode(user.nativeLanguage);
+    const targetLang = overrideLangCode || speechLang || getSpeechLangCode(user.nativeLanguage);
 
     speechService.ensureListening(
       {
@@ -279,7 +291,9 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
 
     const activeAvatar = overrideAvatar || selectedAvatar;
     const gender = (activeAvatar === 'leo' || activeAvatar === 'alex') ? 'MALE' : 'FEMALE';
-    const activeLang = overrideLang || user.nativeLanguage;
+    const hasTelugu = /[\u0C00-\u0C7F]/.test(text);
+    const hasHindi = /[\u0900-\u097F]/.test(text);
+    const activeLang: NativeLanguage = hasTelugu ? 'Telugu' : hasHindi ? 'Hindi' : (overrideLang || user.nativeLanguage);
 
     TTSService.speak(
       text,
@@ -329,8 +343,28 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     handleBargeIn('new_message');
     const currentGenId = ++generationIdRef.current;
 
-    // Analyze grammar
-    const detectedMistakes = AIService.analyzeGrammarAndMistakes(userText, user.nativeLanguage);
+    // Utterance language detection:
+    const hasTelugu = /[\u0C00-\u0C7F]/.test(userText);
+    const hasHindi = /[\u0900-\u097F]/.test(userText);
+    const isTeluguUtterance = hasTelugu || /\b(ante\s+enti|enti|cheppu|bagunnanu|eeroju|em\s+chestunnav|ela\s+unnaru|chudu|matladu|cheppandi)\b/i.test(userText);
+    const isHindiUtterance = hasHindi || /\b(kya\s+hai|kaise\s+ho|kaisa\s+hai|batao|kya\s+karein|samjhao|bolo)\b/i.test(userText);
+    const utteranceLang: NativeLanguage = isTeluguUtterance ? 'Telugu' : isHindiUtterance ? 'Hindi' : 'English';
+
+    // Synchronize recognition language if user switched languages in speech
+    if (isTeluguUtterance && speechLang !== 'te-IN') {
+      setSpeechLang('te-IN');
+      speechService.setLanguage('te-IN');
+    } else if (isHindiUtterance && speechLang !== 'hi-IN') {
+      setSpeechLang('hi-IN');
+      speechService.setLanguage('hi-IN');
+    }
+
+    // STRICT ENGLISH GRAMMAR CORRECTION RULE:
+    // Only analyze English grammar mistakes if the utterance is in English!
+    const detectedMistakes = (utteranceLang === 'English')
+      ? AIService.analyzeGrammarAndMistakes(userText, user.nativeLanguage)
+      : [];
+
     if (detectedMistakes.length > 0) {
       setHighlightedMistakes((prev) => [...detectedMistakes, ...prev].slice(0, 5));
       setLatestCorrection(detectedMistakes[0]);
@@ -344,6 +378,7 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       text: userText.trim(),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       mistakesDetected: detectedMistakes,
+      detectedLanguage: utteranceLang,
     };
 
     if (!currentAccount) {
@@ -391,6 +426,11 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
 
       if (aiResult.detectedLanguage) {
         updateUser({ nativeLanguage: aiResult.detectedLanguage });
+        const newCode = getSpeechLangCode(aiResult.detectedLanguage);
+        if (newCode && newCode !== speechLang) {
+          setSpeechLang(newCode);
+          speechService.setLanguage(newCode);
+        }
       }
       if (aiResult.detectedAvatar) {
         setSelectedAvatar(aiResult.detectedAvatar);
@@ -451,10 +491,10 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     discussedTopicsRef.current = [initialTopic];
 
     let initialGreeting = '';
-    if (user.nativeLanguage === 'Telugu') {
-      initialGreeting = `Namaskaram ${user.name}! 🚀 Fresh conversation start chesa. Eeroju enti matladadham?`;
-    } else if (user.nativeLanguage === 'Hindi') {
-      initialGreeting = `Namaste ${user.name}! 🚀 Nayi conversation shuru karte hain. Aaj kis topic par baat karein?`;
+    if (speechLang === 'te-IN' || user.nativeLanguage === 'Telugu') {
+      initialGreeting = `నమస్కారం ${user.name}! 🚀 కొత్త సంభాషణ ప్రారంభించాను. ఈరోజు ఏం మాట్లాడుకుందాం?`;
+    } else if (speechLang === 'hi-IN' || user.nativeLanguage === 'Hindi') {
+      initialGreeting = `नमस्ते ${user.name}! 🚀 नई बातचीत शुरू हो गई है। आज किस विषय पर बात करें?`;
     } else {
       initialGreeting = `Hello ${user.name}! 🚀 I've started a fresh conversation. What topic would you like to practice today?`;
     }
@@ -495,10 +535,10 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     // Quick initial warm greeting only on first empty session
     if (messages.length === 0) {
       let initialGreeting = '';
-      if (user.nativeLanguage === 'Telugu') {
-        initialGreeting = `Namaskaram ${user.name}! 🚀 Nenu Nexa, ready ga unnanu. Eeroju enti sangathulu? Koncham English lo cheppu chooddam!`;
-      } else if (user.nativeLanguage === 'Hindi') {
-        initialGreeting = `Namaste ${user.name}! 🚀 Main ready hoon. Batao aaj ka din kaisa raha, bindass English mein bolo!`;
+      if (speechLang === 'te-IN' || user.nativeLanguage === 'Telugu') {
+        initialGreeting = `నమస్కారం ${user.name}! 🚀 నేను Nexa, సిద్ధంగా ఉన్నాను. ఈరోజు ఏం విశేషాలు? తెలుగులో లేదా ఇంగ్లీషులో మాట్లాడండి!`;
+      } else if (speechLang === 'hi-IN' || user.nativeLanguage === 'Hindi') {
+        initialGreeting = `नमस्ते ${user.name}! 🚀 मैं Nexa हूँ। आज आपका दिन कैसा रहा? हिंदी या इंग्लिश में बताइए!`;
       } else {
         initialGreeting = `Hello ${user.name}! 🚀 I'm ready. Tell me about your day in English!`;
       }
@@ -651,6 +691,74 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* Spoken Speech Recognition Language Switcher Pill */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              backgroundColor: 'rgba(255, 255, 255, 0.06)',
+              borderRadius: 'var(--radius-full)',
+              padding: '2px 4px',
+              border: '1px solid var(--border-glass)',
+              gap: 3,
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', padding: '0 4px' }} className="hidden md:inline">
+              🎙️ Spoken:
+            </span>
+            <button
+              onClick={() => handleSwitchSpeechLang('te-IN')}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 700,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: speechLang === 'te-IN' ? '#06b6d4' : 'transparent',
+                color: speechLang === 'te-IN' ? '#ffffff' : 'var(--text-muted)',
+                transition: 'all 0.2s ease',
+              }}
+              title="Recognize spoken Telugu (తెలుగు)"
+            >
+              తెలుగు
+            </button>
+            <button
+              onClick={() => handleSwitchSpeechLang('en-IN')}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 700,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: speechLang === 'en-IN' ? '#6366f1' : 'transparent',
+                color: speechLang === 'en-IN' ? '#ffffff' : 'var(--text-muted)',
+                transition: 'all 0.2s ease',
+              }}
+              title="Recognize spoken English"
+            >
+              English
+            </button>
+            <button
+              onClick={() => handleSwitchSpeechLang('hi-IN')}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 700,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: speechLang === 'hi-IN' ? '#f59e0b' : 'transparent',
+                color: speechLang === 'hi-IN' ? '#ffffff' : 'var(--text-muted)',
+                transition: 'all 0.2s ease',
+              }}
+              title="Recognize spoken Hindi (हिन्दी)"
+            >
+              हिन्दी
+            </button>
+          </div>
+
           <VoiceStatusBadge state={avatarState} />
 
           {/* Audio Mute toggle */}

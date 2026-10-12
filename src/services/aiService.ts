@@ -87,6 +87,12 @@ export class AIService {
   // Grammar & mistake checking engine - Extract exact matching real mistakes from human transcript
   static analyzeGrammarAndMistakes(transcript: string, nativeLang: NativeLanguage): Mistake[] {
     if (!transcript || !transcript.trim()) return [];
+
+    // If the transcript is in Telugu, Hindi, or other native script, it is not an English sentence!
+    if (/[\u0C00-\u0C7F]/.test(transcript) || /[\u0900-\u097F]/.test(transcript) || /[\u0B80-\u0BFF]/.test(transcript)) {
+      return [];
+    }
+
     const mistakes: Mistake[] = [];
 
     // Extract sentences or phrases from transcript
@@ -631,25 +637,55 @@ export class AIService {
       };
     }
 
-    // 1. If mistakes detected -> Gentle, authentic coaching with native language slang
-    if (mistakes.length > 0) {
-      const topMistake = mistakes[0];
-      let humanCorrection = '';
+    // Multilingual Conversational Utterance Handling (Telugu / Hindi)
+    const hasTeluguScript = /[\u0C00-\u0C7F]/.test(userMessage);
+    const hasHindiScript = /[\u0900-\u097F]/.test(userMessage);
+    const isTeluguUtterance = hasTeluguScript || /\b(ante\s+enti|enti|cheppu|bagunnanu|eeroju|em\s+chestunnav|ela\s+unnaru|chudu|matladu|cheppandi|enduku|telugu\s+lo)\b/i.test(textLower);
+    const isHindiUtterance = hasHindiScript || /\b(kya\s+hai|kaise\s+ho|kaisa\s+hai|batao|kya\s+karein|samjhao|bolo|hindi\s+mein)\b/i.test(textLower);
 
-      if (nativeLang === 'Telugu') {
-        humanCorrection = `Arere boss! Chinna mistake aindi choodu... ala kaadhu babu, ila anali: "${topMistake.corrected}"! 😅\n\n${topMistake.nativeExplanation}\n\nParvaledu le, tappulu matladithe ne English baaga vastundi! Ippudu okasaari malli cheppu chooddam, try cheyyi!`;
-      } else if (nativeLang === 'Hindi') {
-        humanCorrection = `Arre dost! Thodi si galti ho gayi, aise nahi balki aise bolo: "${topMistake.corrected}"! 😅\n\n${topMistake.nativeExplanation}\n\nKoi baat nahi, galti karke hi toh seekhenge! Ab ek baar phir se try karo!`;
-      } else if (nativeLang === 'Tamil') {
-        humanCorrection = `Aiyyo! Appadi solla koodadhu, ippadi sollunga: "${topMistake.corrected}"! 😅\n\n${topMistake.nativeExplanation}\n\nKavalai padadheenga, ippo thirumba solli try pannunga!`;
-      } else if (nativeLang === 'Kannada') {
-        humanCorrection = `Ayyo! Haage helbaardu, heege heli: "${topMistake.corrected}"! 😅\n\n${topMistake.nativeExplanation}\n\nEnu tondare illa, innomme prayathnisi!`;
+    if (isTeluguUtterance) {
+      let teluguReply = '';
+      if (textLower.includes('introduce ante enti') || textLower.includes('introduce ante') || textLower.includes('పరిచయం')) {
+        teluguReply = `‘Introduce’ అంటే తెలుగులో ‘పరిచయం చేసుకోవడం’ లేదా ‘పరిచయం చేయడం’ అని అర్థం. ఉదాహరణకు, ‘Introduce yourself’ అంటే ‘మీ గురించి మీరు పరిచయం చేసుకోండి’. మీ గురించి కొంచెం ఇంగ్లీషులో చెప్పండి చూద్దాం!`;
+      } else if (textLower.includes('namaskaram') || textLower.includes('నమస్కారం') || textLower.includes('ela unnaru') || textLower.includes('ఎలా ఉన్నారు')) {
+        teluguReply = `నమస్కారం! నేను చాలా బాగున్నాను. మీరు ఎలా ఉన్నారు? ఈరోజు ఏం టాపిక్ మాట్లాడుకుందాం?`;
+      } else if (textLower.includes('bagunnanu') || textLower.includes('బాగున్నాను')) {
+        teluguReply = `చాలా సంతోషం! ఈరోజు మీ రోజు ఎలా గడిచింది? కొంచెం ఇంగ్లీషులో ప్రాక్టీస్ చేద్దామా?`;
       } else {
-        humanCorrection = `Oops! That's not quite how we say it. Say it like this: "${topMistake.corrected}"! 😅\n\n${topMistake.englishExplanation}\n\nNo worries at all, go ahead and give that another try!`;
+        teluguReply = `తప్పకుండా! "${userMessage}" గురించి నేను తెలుగులోనే సహాయం చేస్తాను. మీ ప్రశ్న లేదా ఆలోచనను కొనసాగించండి!`;
       }
 
       return {
-        text: humanCorrection,
+        text: teluguReply,
+        mistakes: [],
+        funnyReaction: 'wave',
+        detectedLanguage: 'Telugu',
+      };
+    }
+
+    if (isHindiUtterance) {
+      let hindiReply = '';
+      if (textLower.includes('namaste') || textLower.includes('नमस्ते') || textLower.includes('kaise ho') || textLower.includes('कैसे हो')) {
+        hindiReply = `नमस्ते! मैं बहुत बढ़िया हूँ। आप कैसे हैं? आज क्या नया सीखना चाहते हैं?`;
+      } else {
+        hindiReply = `ज़रूर! आपने जो पूछा "${userMessage}", मैं इसमें आपकी पूरी मदद करूँगी। बताइए आज किस विषय पर बात करें?`;
+      }
+
+      return {
+        text: hindiReply,
+        mistakes: [],
+        funnyReaction: 'wave',
+        detectedLanguage: 'Hindi',
+      };
+    }
+
+    // 1. Strict English Grammar Correction Rule: Explain English mistakes in ENGLISH ONLY
+    if (mistakes.length > 0) {
+      const topMistake = mistakes[0];
+      const englishCorrection = `Your sentence should be: "${topMistake.corrected}"\n${topMistake.englishExplanation}\nNow try another sentence using the correct form!`;
+
+      return {
+        text: englishCorrection,
         mistakes,
         funnyReaction: 'concerned',
       };
@@ -889,11 +925,16 @@ export class AIService {
       if (response.ok) {
         const data = await response.json();
         if (data.success && data.text) {
+          const serverDetectedLang: NativeLanguage | undefined = data.detectedLanguage || (
+            /[\u0C00-\u0C7F]/.test(data.text) ? 'Telugu' :
+            /[\u0900-\u097F]/.test(data.text) ? 'Hindi' :
+            undefined
+          );
           return {
             text: data.text,
             mistakes,
             funnyReaction: mistakes.length > 0 ? 'correct' : 'celebrate',
-            detectedLanguage,
+            detectedLanguage: serverDetectedLang || detectedLanguage,
             detectedAvatar,
           };
         }

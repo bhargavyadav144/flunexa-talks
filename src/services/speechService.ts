@@ -328,14 +328,44 @@ export class SpeechService {
     }
   }
 
+  // Update recognition language dynamically
+  public setLanguage(langCode: string) {
+    if (!langCode) return;
+    const isDifferent = this.currentLangCode !== langCode;
+    this.currentLangCode = langCode;
+
+    if (isDifferent && this.recognition && this.isListening) {
+      console.log(`[MIC] Switching recognition language to: ${langCode}`);
+      try {
+        this.recognition.lang = langCode;
+      } catch (e) {
+        // If browser requires restart to change language
+        if (this.activeHandlers) {
+          this.startListening(this.activeHandlers, langCode);
+        }
+      }
+    }
+  }
+
+  public getLanguage(): string {
+    return this.currentLangCode;
+  }
+
   // Ensure recognition is actively capturing speech without interruption
   public ensureListening(handlers?: SpeechRecognitionHandlers, langCode?: string) {
     this.shouldKeepListening = true;
     if (handlers) this.activeHandlers = handlers;
-    if (langCode) this.currentLangCode = langCode;
+    if (langCode && langCode !== this.currentLangCode) {
+      this.currentLangCode = langCode;
+      if (this.recognition) {
+        try {
+          this.recognition.lang = langCode;
+        } catch (e) {}
+      }
+    }
 
     if (!this.isListening && this.activeHandlers) {
-      console.log('[MIC] ensureListening: Resuming active listening loop...');
+      console.log('[MIC] ensureListening: Resuming active listening loop in ' + this.currentLangCode + '...');
       this.startListening(this.activeHandlers, this.currentLangCode);
     }
   }
