@@ -88,13 +88,13 @@ app.post('/api/auth/send-signup-otp', async (req, res) => {
       return res.status(400).json({ error: 'Please provide a valid email address.' });
     }
 
-    const existingUser = findUserByEmail(email);
+    const existingUser = await findUserByEmail(email);
     if (existingUser) {
       return res.status(409).json({ error: 'An account with this email already exists. Please log in.' });
     }
 
     const otp = generateOtp();
-    saveOtp(email, otp, 'signup', {
+    await saveOtp(email, otp, 'signup', {
       name,
       email,
       password,
@@ -136,7 +136,7 @@ app.post('/api/auth/verify-signup-otp', async (req, res) => {
       return res.status(400).json({ error: 'Email and OTP are required.' });
     }
 
-    const record = getOtpRecord(email, 'signup');
+    const record = await getOtpRecord(email, 'signup');
     if (!record) {
       return res.status(400).json({ error: 'Verification code expired or not found. Please request a new one.' });
     }
@@ -158,7 +158,7 @@ app.post('/api/auth/verify-signup-otp', async (req, res) => {
     });
 
     // Delete used OTP
-    deleteOtpRecord(email, 'signup');
+    await deleteOtpRecord(email, 'signup');
 
     // Generate JWT token
     const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
@@ -192,7 +192,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required.' });
     }
 
-    const user = findUserByEmail(email);
+    const user = await findUserByEmail(email);
     if (!user) {
       return res.status(401).json({ error: 'No account found with this email. Please sign up.' });
     }
@@ -231,7 +231,7 @@ app.post('/api/auth/social-login', async (req, res) => {
     const email = userEmail || `${provider}_user@flunexatalk.com`;
     const name = userName || `${providerLabel} User`;
 
-    let user = findUserByEmail(email);
+    let user = await findUserByEmail(email);
     if (!user) {
       user = await createUser({
         name,
@@ -279,13 +279,13 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       return res.status(400).json({ error: 'Please enter your registered email address.' });
     }
 
-    const user = findUserByEmail(email);
+    const user = await findUserByEmail(email);
     if (!user) {
       return res.status(404).json({ error: 'No account found with this email. Please check your spelling or sign up.' });
     }
 
     const otp = generateOtp();
-    saveOtp(email, otp, 'forgot_password', { email, userId: user.id });
+    await saveOtp(email, otp, 'forgot_password', { email, userId: user.id });
 
     // Send real email via nodemailer
     const emailResult = await sendOtpEmail({
@@ -311,7 +311,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 });
 
 // 5. Verify Forgot Password OTP
-app.post('/api/auth/verify-reset-otp', (req, res) => {
+app.post('/api/auth/verify-reset-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
 
@@ -319,7 +319,7 @@ app.post('/api/auth/verify-reset-otp', (req, res) => {
       return res.status(400).json({ error: 'Email and OTP are required.' });
     }
 
-    const record = getOtpRecord(email, 'forgot_password');
+    const record = await getOtpRecord(email, 'forgot_password');
     if (!record) {
       return res.status(400).json({ error: 'Verification code expired or not found. Please request a new code.' });
     }
@@ -347,7 +347,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Email and OTP are required.' });
     }
 
-    const record = getOtpRecord(email, 'forgot_password');
+    const record = await getOtpRecord(email, 'forgot_password');
     if (!record) {
       return res.status(400).json({ error: 'Reset session expired. Please request a new code.' });
     }
@@ -356,13 +356,13 @@ app.post('/api/auth/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Invalid verification code.' });
     }
 
-    const user = findUserByEmail(email);
+    const user = await findUserByEmail(email);
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
 
     // Delete used OTP
-    deleteOtpRecord(email, 'forgot_password');
+    await deleteOtpRecord(email, 'forgot_password');
 
     let updatedUser = sanitizeUser(user);
 
@@ -402,7 +402,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // 7. Get Current User Profile
-app.get('/api/auth/me', (req, res) => {
+app.get('/api/auth/me', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized. No token provided.' });
@@ -411,7 +411,7 @@ app.get('/api/auth/me', (req, res) => {
   const token = authHeader.split(' ')[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = findUserById(decoded.userId);
+    const user = await findUserById(decoded.userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
@@ -802,6 +802,10 @@ Guidelines for your response:
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🤖 Flunexa Talk Backend Server running on port ${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`🤖 Flunexa Talk Backend Server running on port ${PORT}`);
+  });
+}
+
+export default app;
