@@ -744,63 +744,148 @@ app.get('/api/leaderboard', (req, res) => {
   ]);
 });
 
-// Dynamic AI Chat & Question Answering Endpoint (Uses Gemini API Key if available)
+// Dynamic AI Chat & Question Answering Endpoint (Uses Gemini API with modern model fallback)
 app.post('/api/chat', async (req, res) => {
   try {
     const { userMessage, topic, history, avatarName, nativeLanguage } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey || !apiKey.trim() || apiKey === 'YOUR_GEMINI_API_KEY_HERE') {
-      return res.json({ success: false, fallback: true, message: 'No Gemini API key configured.' });
-    }
-
-    const systemPrompt = `You are ${avatarName || 'Nexa'}, an enthusiastic, friendly, and witty AI English teacher and conversation partner for non-native speakers.
-The student's native language is ${nativeLanguage || 'Telugu'}.
-Guidelines for your response:
-1. Provide a direct, intelligent, and helpful answer to what the user asked (do NOT give generic praise unless relevant).
-2. Keep your response concise (2 to 3 sentences max) so it sounds smooth and natural when spoken aloud.
-3. If they ask in or mention Telugu/Hindi, you may mix friendly Telugu/Hindi phrases naturally (e.g. "Chala manchidhi!", "Bilkul!").
-4. Maintain a warm, encouraging, human-like coach tone.`;
-
-    const contents = [
-      { role: 'user', parts: [{ text: systemPrompt }] },
-      { role: 'model', parts: [{ text: `Understood! I am ${avatarName || 'Nexa'}, ready to provide direct, concise, and helpful answers to any question.` }] },
-    ];
-
-    if (history && Array.isArray(history)) {
-      history.slice(-6).forEach((msg) => {
-        contents.push({
-          role: msg.sender === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.text }],
-        });
+      return res.status(500).json({
+        success: false,
+        error: 'Gemini API key is not configured on the server.',
       });
     }
 
-    contents.push({
-      role: 'user',
-      parts: [{ text: userMessage }],
-    });
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents }),
-      }
-    );
-
-    const data = await response.json();
-    if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
-      const aiReply = data.candidates[0].content.parts[0].text.trim();
-      return res.json({ success: true, text: aiReply });
-    } else {
-      console.warn('Gemini API returned unexpected structure:', data);
-      return res.json({ success: false, fallback: true });
+    if (!userMessage || !userMessage.trim()) {
+      return res.status(400).json({ success: false, error: 'User message is required.' });
     }
+
+    const systemPrompt = `You are Flunexa AI Coach, a friendly, patient, intelligent, and natural English-speaking tutor.
+Your name is ${avatarName || 'Nexa'}.
+The student's native language is ${nativeLanguage || 'Telugu'}.
+Current practice topic: "${topic || 'General Daily English Conversation'}".
+
+Teaching rules:
+1. Adapt your language to the user's English level. Use simple, natural English.
+2. Ask one question at a time. Keep normal spoken responses concise and natural (2 to 3 sentences max) so they sound lively and realistic when spoken aloud.
+3. Answer the user's actual question directly before suggesting another exercise.
+4. Understand imperfect English and infer the intended meaning when reasonable.
+5. If the user makes a meaningful grammatical mistake, politely provide a short, encouraging correction first (e.g. "Good try! A more natural sentence is '...', because..."), then continue the conversation. When the user's sentence is correct, do NOT invent an error.
+6. Support conversation practice, interviews, travel, college, workplace communication, shopping, and friendships.
+7. If the user asks in or requests Telugu/Hindi, explain difficult concepts in ${nativeLanguage || 'Telugu'} naturally.
+8. Encourage English practice without shaming the learner. Avoid repetitive greetings.
+9. Continue naturally from the conversation context and follow-up questions.`;
+
+    // Construct valid alternating Gemini contents
+    const contents = [];
+
+    if (history && Array.isArray(history)) {
+      const recent = history.slice(-10);
+      for (const msg of recent) {
+        if (!msg.text || !msg.text.trim()) continue;
+        const role = msg.sender === 'user' ? 'user' : 'model';
+        if (contents.length > 0 && contents[contents.length - 1].role === role) {
+          contents[contents.length - 1].parts[0].text += '\n' + msg.text.trim();
+        } else {
+          contents.push({
+            role,
+            parts: [{ text: msg.text.trim() }],
+          });
+        }
+      }
+    }
+
+    // Ensure the last message is the new userMessage with role 'user'
+    if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+      contents[contents.length - 1].parts[0].text += '\n' + userMessage.trim();
+    } else {
+      contents.push({
+        role: 'user',
+        parts: [{ text: userMessage.trim() }],
+      });
+    }
+
+    // Ensure first message has role 'user'
+    if (contents.length > 0 && contents[0].role !== 'user') {
+      contents.unshift({
+        role: 'user',
+        parts: [{ text: 'Hello!' }],
+      });
+    }
+
+    const payload = {
+      systemInstruction: {
+        parts: [{ text: systemPrompt }],
+      },
+      contents,
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 600,
+      },
+    };
+
+    const CANDIDATE_MODELS = [
+      'gemini-3.7-flash',
+      'gemini-3.5-flash',
+      'gemini-3.1-flash-lite',
+      'gemini-flash-latest',
+      'gemini-3.8-flash',
+    ];
+
+    let lastError = null;
+
+    for (const model of CANDIDATE_MODELS) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+          const parts = data.candidates?.[0]?.content?.parts;
+          if (parts && parts.length > 0) {
+            const aiReply = parts
+              .filter((p) => p.text && !p.thought)
+              .map((p) => p.text)
+              .join('\n')
+              .trim();
+
+            if (aiReply) {
+              return res.json({
+                success: true,
+                text: aiReply,
+                model,
+              });
+            }
+          }
+        } else {
+          const errData = await response.text();
+          lastError = `Model ${model} returned ${response.status}: ${errData}`;
+          console.warn(`[Gemini API] ${model} unavailable (${response.status}), trying next candidate...`);
+        }
+      } catch (reqErr) {
+        lastError = reqErr.message;
+      }
+    }
+
+    console.error('All Gemini candidate models failed:', lastError);
+    return res.status(502).json({
+      success: false,
+      error: 'AI service temporarily unavailable. Please try again in a moment.',
+      details: lastError,
+    });
   } catch (error) {
-    console.error('Error calling Gemini API:', error.message);
-    return res.json({ success: false, fallback: true });
+    console.error('Error in /api/chat:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Internal AI service error.',
+    });
   }
 });
 

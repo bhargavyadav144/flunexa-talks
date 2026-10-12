@@ -842,21 +842,32 @@ export class AIService {
     };
   }
 
-  // Async Teacher Response Generator with Backend API support (Gemini API fallback)
+  // Async Teacher Response Generator with Backend API support & AbortSignal for Barge-in Interruption
   static async generateTeacherResponseAsync(
     userMessage: string,
     topic: string,
     history: { sender: 'ai' | 'user'; text: string }[],
     avatarName: string = 'Nexa',
-    nativeLang: NativeLanguage = 'Telugu'
+    nativeLang: NativeLanguage = 'Telugu',
+    signal?: AbortSignal
   ): Promise<{ text: string; mistakes: Mistake[]; funnyReaction: string; detectedLanguage?: NativeLanguage; detectedAvatar?: AvatarId }> {
-    const localResult = this.generateTeacherResponse(userMessage, topic, history, avatarName, nativeLang);
+    // 1. Detect if user is requesting avatar or language switch
+    let detectedLanguage: NativeLanguage | undefined;
+    let detectedAvatar: AvatarId | undefined;
+    const lower = userMessage.toLowerCase();
 
-    // If local result detected a language/voice switch or a grammar mistake, prefer local coach output immediately
-    if (localResult.detectedLanguage || localResult.detectedAvatar || localResult.mistakes.length > 0) {
-      return localResult;
-    }
+    if (lower.includes('telugu')) detectedLanguage = 'Telugu';
+    else if (lower.includes('hindi')) detectedLanguage = 'Hindi';
+    else if (lower.includes('tamil')) detectedLanguage = 'Tamil';
+    else if (lower.includes('english')) detectedLanguage = 'English';
 
+    if (lower.includes('leo') || lower.includes('male voice') || lower.includes('boy')) detectedAvatar = 'leo';
+    else if (lower.includes('nexa') || lower.includes('female voice') || lower.includes('girl')) detectedAvatar = 'nexa';
+
+    // 2. Grammar analysis for feedback cards
+    const mistakes = this.analyzeGrammarAndMistakes(userMessage, nativeLang);
+
+    // 3. Always invoke real AI endpoint for natural conversation
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -868,6 +879,7 @@ export class AIService {
           avatarName,
           nativeLanguage: nativeLang,
         }),
+        signal,
       });
 
       if (response.ok) {
@@ -875,15 +887,26 @@ export class AIService {
         if (data.success && data.text) {
           return {
             text: data.text,
-            mistakes: localResult.mistakes,
-            funnyReaction: 'celebrate',
+            mistakes,
+            funnyReaction: mistakes.length > 0 ? 'correct' : 'celebrate',
+            detectedLanguage,
+            detectedAvatar,
           };
         }
       }
-    } catch (e) {
-      // Backend chat endpoint offline or key not configured
+    } catch (e: any) {
+      if (e.name === 'AbortError') {
+        throw e; // Propagate abort cleanly for barge-in cancellation
+      }
+      console.warn('Real AI chat endpoint notice:', e.message);
     }
 
-    return localResult;
+    // 4. Graceful fallback only if network/API is completely offline
+    const localResult = this.generateTeacherResponse(userMessage, topic, history, avatarName, nativeLang);
+    return {
+      ...localResult,
+      detectedLanguage: detectedLanguage || localResult.detectedLanguage,
+      detectedAvatar: detectedAvatar || localResult.detectedAvatar,
+    };
   }
 }

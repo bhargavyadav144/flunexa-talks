@@ -17,10 +17,12 @@ export type AvatarState =
   | 'idle'
   | 'speaking'
   | 'listening'
+  | 'user_speaking'
   | 'thinking'
   | 'correcting'
   | 'celebrating'
   | 'sleepy'
+  | 'interrupted'
   | 'paused';
 
 export interface UserProfile {

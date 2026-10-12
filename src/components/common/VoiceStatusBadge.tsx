@@ -17,6 +17,15 @@ export const VoiceStatusBadge: React.FC<VoiceStatusBadgeProps> = ({ state }) => 
           text: 'Listening to you',
           pulse: true,
         };
+      case 'user_speaking':
+        return {
+          color: '#10b981',
+          bg: 'rgba(16, 185, 129, 0.25)',
+          border: 'rgba(16, 185, 129, 0.5)',
+          emoji: '🎙️',
+          text: 'You are speaking...',
+          pulse: true,
+        };
       case 'speaking':
         return {
           color: '#6366f1',
@@ -25,6 +34,15 @@ export const VoiceStatusBadge: React.FC<VoiceStatusBadgeProps> = ({ state }) => 
           emoji: '🔵',
           text: 'AI Tutor Speaking',
           pulse: false,
+        };
+      case 'interrupted':
+        return {
+          color: '#f97316',
+          bg: 'rgba(249, 115, 22, 0.2)',
+          border: 'rgba(249, 115, 22, 0.5)',
+          emoji: '⚡',
+          text: 'Interrupted • Listening...',
+          pulse: true,
         };
       case 'thinking':
         return {

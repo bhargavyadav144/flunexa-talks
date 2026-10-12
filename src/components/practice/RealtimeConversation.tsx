@@ -27,6 +27,7 @@ import {
   AlertCircle,
   Minimize2,
   Maximize2,
+  RotateCcw,
 } from 'lucide-react';
 
 interface RealtimeConversationProps {
@@ -56,9 +57,12 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
   const [currentFunnyMood, setCurrentFunnyMood] = useState<string>('idle');
   const [latestCorrection, setLatestCorrection] = useState<Mistake | null>(null);
   const [savedNotification, setSavedNotification] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<any>(null);
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
+  const generationIdRef = useRef<number>(0);
 
   useEffect(() => {
     if (isChatDrawerOpen) {
@@ -78,18 +82,38 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     return () => clearInterval(timerRef.current);
   }, [isSessionActive]);
 
+  // Instant AI Interruption (Barge-in): immediately halts audio and in-flight API request
+  const handleBargeIn = (reason: string = 'user_speech') => {
+    const isSpeaking = TTSService.isCurrentlySpeaking() || speechService.isSpeaking();
+    const isThinking = avatarState === 'thinking';
+
+    if (isSpeaking || isThinking) {
+      console.log(`[Barge-in] Interrupted by ${reason}! Halting AI speech & cancelling stale request.`);
+      generationIdRef.current += 1;
+      if (activeAbortControllerRef.current) {
+        activeAbortControllerRef.current.abort();
+        activeAbortControllerRef.current = null;
+      }
+      TTSService.stop();
+      speechService.stopSpeaking();
+      setMouthVolume(0);
+      setAvatarState('interrupted');
+      soundService.playTick();
+    }
+  };
+
   // Cleanup on unmount
   useEffect(() => {
     // Auto-start conversation as soon as user opens AI Talk
     startConversationSession();
 
     return () => {
+      handleBargeIn('unmount');
       speechService.stopSpeaking();
       speechService.stopListening();
       speechService.cleanupAudioStream();
     };
   }, []);
-
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -103,14 +127,20 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     funnyReaction?: string,
     hasMistake: boolean = false,
     overrideAvatar?: AvatarId,
-    overrideLang?: NativeLanguage
+    overrideLang?: NativeLanguage,
+    expectedGenId?: number
   ) => {
-    if (isAudioMuted) {
-      setAvatarState('idle');
+    if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) {
+      console.log('[TTS] Discarding outdated speech playback after interruption.');
       return;
     }
 
-    const nextState = hasMistake
+    if (isAudioMuted) {
+      setAvatarState('listening');
+      return;
+    }
+
+    const nextState: AvatarState = hasMistake
       ? 'correcting'
       : funnyReaction === 'sleepy'
       ? 'sleepy'
@@ -130,22 +160,30 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
       activeLang,
       gender,
       () => {
+        if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) {
+          TTSService.stop();
+          return;
+        }
         setAvatarState(nextState);
         setMouthVolume(0.8);
       },
       () => {
+        if (expectedGenId !== undefined && expectedGenId !== generationIdRef.current) return;
         setAvatarState(nextState === 'sleepy' ? 'sleepy' : 'listening');
         setMouthVolume(0);
       }
     );
   };
 
-
   // Process user speech when user pauses or submits
-  const handleUserMessageReceived = (userText: string) => {
+  const handleUserMessageReceived = async (userText: string) => {
     if (!userText.trim()) return;
 
-    // Analyze mistakes
+    // Instant interruption of any previous speaking/thinking
+    handleBargeIn('new_message');
+    const currentGenId = ++generationIdRef.current;
+
+    // Analyze grammar
     const detectedMistakes = AIService.analyzeGrammarAndMistakes(userText, user.nativeLanguage);
     if (detectedMistakes.length > 0) {
       setHighlightedMistakes((prev) => [...detectedMistakes, ...prev].slice(0, 5));
@@ -170,17 +208,27 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
     setMessages((prev) => [...prev, newUserMsg]);
     setLiveTranscript('');
     setAvatarState('thinking');
+    setErrorMessage(null);
 
-    // Human-like conversational thinking delay
-    setTimeout(async () => {
+    const controller = new AbortController();
+    activeAbortControllerRef.current = controller;
+
+    try {
       const history = [...messages, newUserMsg].map((m) => ({ sender: m.sender, text: m.text }));
       const aiResult = await AIService.generateTeacherResponseAsync(
         userText,
         initialTopic,
         history,
         selectedAvatar === 'leo' ? 'Leo' : 'Nexa',
-        user.nativeLanguage
+        user.nativeLanguage,
+        controller.signal
       );
+
+      // Verify request wasn't interrupted in-flight
+      if (currentGenId !== generationIdRef.current) {
+        console.log('[AI] Stale response safely discarded.');
+        return;
+      }
 
       if (aiResult.detectedLanguage) {
         updateUser({ nativeLanguage: aiResult.detectedLanguage });
@@ -210,9 +258,52 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         aiResult.funnyReaction,
         aiResult.mistakes.length > 0,
         aiResult.detectedAvatar,
-        aiResult.detectedLanguage
+        aiResult.detectedLanguage,
+        currentGenId
       );
-    }, 400);
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        console.log('[AI] Previous request aborted cleanly on user barge-in.');
+        return;
+      }
+      console.error('[AI] Generation error:', err);
+      setErrorMessage('Could not connect to AI Coach. Please try speaking again.');
+      setAvatarState('listening');
+    } finally {
+      if (activeAbortControllerRef.current === controller) {
+        activeAbortControllerRef.current = null;
+      }
+    }
+  };
+
+  // Restart / Reset conversation state
+  const handleRestartConversation = () => {
+    handleBargeIn('restart');
+    setMessages([]);
+    setLiveTranscript('');
+    setHighlightedMistakes([]);
+    setLatestCorrection(null);
+    setDurationSeconds(0);
+    setErrorMessage(null);
+
+    let initialGreeting = '';
+    if (user.nativeLanguage === 'Telugu') {
+      initialGreeting = `Namaskaram ${user.name}! 🚀 Fresh conversation start chesa. Eeroju enti matladadham?`;
+    } else if (user.nativeLanguage === 'Hindi') {
+      initialGreeting = `Namaste ${user.name}! 🚀 Nayi conversation shuru karte hain. Aaj kis topic par baat karein?`;
+    } else {
+      initialGreeting = `Hello ${user.name}! 🚀 I've started a fresh conversation. What topic would you like to practice today?`;
+    }
+
+    const welcomeMsg: ConversationMessage = {
+      id: 'msg-start-' + Date.now(),
+      sender: 'ai',
+      text: initialGreeting,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      funnyReaction: 'wave',
+    };
+    setMessages([welcomeMsg]);
+    speakAIResponse(initialGreeting, 'wave', false, undefined, undefined, generationIdRef.current);
   };
 
   // Start Voice Activity Detection & continuous recognition loop
@@ -248,32 +339,35 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         funnyReaction: 'wave',
       };
       setMessages([welcomeMsg]);
-      speakAIResponse(initialGreeting, 'wave');
+      speakAIResponse(initialGreeting, 'wave', false, undefined, undefined, generationIdRef.current);
     }
 
-    // Start continuous speech recognition loop
+    // Start continuous speech recognition loop with automatic Barge-in Interruption
     const activateListeningLoop = () => {
       speechService.startListening(
         {
           onStart: () => {},
           onUserSpeakingDetected: () => {
-            if (!TTSService.isCurrentlySpeaking()) {
-              setAvatarState('listening');
-            }
+            // Immediate barge-in: stop AI speaking when user starts speaking
+            handleBargeIn('speech_detected');
+            setAvatarState('user_speaking');
           },
           onInterimResult: (transcript) => {
-            if (!TTSService.isCurrentlySpeaking()) {
-              setAvatarState('listening');
-            }
+            handleBargeIn('interim_speech');
+            setAvatarState('user_speaking');
             setLiveTranscript(transcript);
           },
           onFinalResult: (transcript) => {
             if (transcript.trim()) {
-              TTSService.stop(); // Stop previous AI speech when user finishes speaking
               handleUserMessageReceived(transcript);
             }
           },
-          onError: (err) => console.warn('Speech recognition notice:', err),
+          onError: (err) => {
+            console.warn('Speech recognition notice:', err);
+            if (typeof err === 'string' && (err.includes('not-allowed') || err.includes('denied'))) {
+              setErrorMessage('Microphone access was denied. Please allow microphone permission in your browser.');
+            }
+          },
           onEnd: () => {
             // Auto-restart recognition if session is active
             if (isSessionActive) {
@@ -468,6 +562,15 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
             <span>Chat ({messages.length})</span>
           </button>
 
+          {/* Restart & Clear Context Button */}
+          <button
+            onClick={handleRestartConversation}
+            className="btn-icon"
+            style={{ width: 36, height: 36 }}
+            title="Restart Conversation & Clear Active Context"
+          >
+            <RotateCcw size={15} color="var(--text-dim)" />
+          </button>
 
           {/* Finish & Save Session Button */}
           <button
@@ -485,6 +588,36 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         </div>
       </div>
 
+      {/* Error / Permission Alert Banner if any */}
+      {errorMessage && (
+        <div
+          style={{
+            margin: '8px 24px',
+            padding: '10px 16px',
+            borderRadius: 12,
+            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            color: '#fca5a5',
+            fontSize: 13,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertCircle size={16} />
+            <span>{errorMessage}</span>
+          </div>
+          <button
+            onClick={() => setErrorMessage(null)}
+            style={{ background: 'none', border: 'none', color: '#fca5a5', cursor: 'pointer', padding: 4 }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* CENTER: THE PROMINENT FULL-SCREEN ANIMATED ROBOT */}
       <div
         style={{
@@ -498,12 +631,11 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
         }}
       >
 
-
         {/* Big Animated 3D Mascot Character Canvas */}
         <div style={{ width: '100%', maxWidth: 420, height: 320, margin: '0 auto' }}>
           <Avatar3D
             isSpeaking={avatarState === 'speaking' || avatarState === 'celebrating' || avatarState === 'correcting'}
-            avatarState={avatarState === 'celebrating' ? 'celebrating' : avatarState === 'correcting' ? 'correcting' : avatarState === 'sleepy' ? 'sleepy' : 'idle'}
+            avatarState={avatarState}
           />
         </div>
 
@@ -588,9 +720,20 @@ export const RealtimeConversation: React.FC<RealtimeConversationProps> = ({
               </div>
             </div>
 
-            <button onClick={() => setIsChatDrawerOpen(false)} className="btn-icon">
-              <X size={17} />
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button
+                onClick={handleRestartConversation}
+                className="btn-secondary"
+                style={{ padding: '6px 10px', fontSize: 11 }}
+                title="Restart Conversation & Clear Context"
+              >
+                <RotateCcw size={12} />
+                <span>Restart</span>
+              </button>
+              <button onClick={() => setIsChatDrawerOpen(false)} className="btn-icon">
+                <X size={17} />
+              </button>
+            </div>
           </div>
 
           {/* Drawer Message Stream */}

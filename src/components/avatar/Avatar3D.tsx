@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 
 interface Avatar3DProps {
   isSpeaking: boolean;
-  avatarState?: 'idle' | 'speaking' | 'celebrating' | 'correcting' | 'sleepy' | 'wave' | 'listening' | 'thinking' | 'paused';
+  avatarState?: 'idle' | 'speaking' | 'celebrating' | 'correcting' | 'sleepy' | 'wave' | 'listening' | 'user_speaking' | 'thinking' | 'interrupted' | 'paused';
   onClick?: () => void;
 }
 
@@ -29,11 +29,14 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({
       case 'speaking':
         return 'rgba(6, 182, 212, 0.75)';
       case 'listening':
-        return 'rgba(16, 185, 129, 0.8)';
+      case 'user_speaking':
+        return 'rgba(16, 185, 129, 0.85)';
       case 'celebrating':
         return 'rgba(236, 72, 153, 0.9)';
       case 'correcting':
         return 'rgba(245, 158, 11, 0.85)';
+      case 'interrupted':
+        return 'rgba(249, 115, 22, 0.9)';
       case 'sleepy':
         return 'rgba(139, 92, 246, 0.8)';
       case 'thinking':
